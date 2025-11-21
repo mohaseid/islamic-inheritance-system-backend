@@ -72,7 +72,7 @@
  * '400':
  * description: Invalid input provided (e.g., missing heirs).
  * '500':
- * description: Server error during calculation (e.g., database connection failure).
+ * description: Server error during calculation.
  */
 exports.calculateShares = async (req, res) => {
   const input = req.body;
