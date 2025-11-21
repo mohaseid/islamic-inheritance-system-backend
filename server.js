@@ -35,10 +35,16 @@ const swaggerOptions = {
         url: `http://localhost:${port}`,
         description: "Local Development Server",
       },
-
       {
         url: "https://moha-inheritance-api.onrender.com",
         description: "Production Render API",
+      },
+    ],
+
+    tags: [
+      {
+        name: "Calculation",
+        description: "Core inheritance share calculation operations",
       },
     ],
   },
