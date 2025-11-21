@@ -1,23 +1,23 @@
 {
-  "name": "inheritancemoha-backend",
+  "name": "islamic-inheritance-system-backend",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "migrate": "node migrate.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "migrate": "node migrate.js"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mohaseid/inheritancemoha-Backend.git"
+    "url": "https://github.com/mohaseid/islamic-inheritance-system-backend.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/mohaseid/inheritancemoha-Backend/issues"
+    "url": "https://github.com/mohaseid/islamic-inheritance-system-backend/issues"
   },
-  "homepage": "https://github.com/mohaseid/inheritancemoha-Backend#readme",
+  "homepage": "https://github.com/mohaseid/islamic-inheritance-system-backend#readme",
   "dependencies": {
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
