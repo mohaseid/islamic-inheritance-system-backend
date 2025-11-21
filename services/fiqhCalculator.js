@@ -1,5 +1,10 @@
 const pool = require("../db");
 
+/**
+ * Main function to calculate inheritance shares according to Fiqh principles.
+ * @param {object} input - Contains deceased, assets, liabilities, and heirs list.
+ * @returns {object} - The final calculation result.
+ */
 exports.calculateShares = async (input) => {
   const { assets, liabilities, heirs } = input;
 
@@ -43,7 +48,9 @@ exports.calculateShares = async (input) => {
     allRules = ruleResult.rows;
   } catch (error) {
     console.error("Database query for Fiqh Rules failed:", error);
-    throw new Error("Failed to retrieve inheritance rules from the database.");
+    throw new Error(
+      "Failed to retrieve inheritance rules from the database. Check database connection and migrations."
+    );
   }
 
   allRules
@@ -92,21 +99,96 @@ exports.calculateShares = async (input) => {
 
     if (finalShare > 0) {
       heir.finalShare = finalShare * heir.count;
-      heir.status = `FARAD: Allocated ${finalShare}`;
+      totalFaraidShare += heir.finalShare;
+      heir.status = heir.status.startsWith("FARAD")
+        ? heir.status
+        : `FARAD: Allocated ${finalShare}`;
     }
   });
 
-  const residue = 1.0 - totalFaraidShare;
+  let residueFraction = 1.0 - totalFaraidShare;
   let asabaHeirs = survivingHeirs.filter((h) => h.classification === "Asaba");
 
-  if (residue > 0 && asabaHeirs.length > 0) {
-    asabaHeirs[0].finalShare += residue;
-    asabaHeirs[0].status = `ASABA: Allocated Residue of ${residue}`;
+  if (residueFraction > 0 && asabaHeirs.length > 0) {
+    let totalAsabaPoints = 0;
+
+    asabaHeirs.forEach((heir) => {
+      if (heir.name_en.includes("Son") || heir.name_en.includes("Brother")) {
+        heir.points = heir.count * 2;
+      } else if (
+        heir.name_en.includes("Daughter") ||
+        heir.name_en.includes("Sister")
+      ) {
+        heir.points = heir.count * 1;
+      } else {
+        heir.points = 0;
+      }
+      totalAsabaPoints += heir.points;
+    });
+
+    if (totalAsabaPoints > 0) {
+      asabaHeirs.forEach((heir) => {
+        if (heir.points > 0) {
+          const asabaShare = residueFraction * (heir.points / totalAsabaPoints);
+          heir.finalShare += asabaShare;
+          heir.status = `ASABA: Allocated Residue of ${asabaShare.toFixed(4)}`;
+          heir.classification = "Asaba (Residue)";
+        }
+      });
+    }
+  }
+
+  let totalFinalShare = survivingHeirs.reduce(
+    (sum, h) => sum + h.finalShare,
+    0
+  );
+  const hasAsaba = survivingHeirs.some((h) =>
+    h.classification.includes("Asaba")
+  );
+  let reconciliationStatus = "Balanced";
+
+  if (totalFinalShare > 1.0001) {
+    reconciliationStatus = "Awl (Increase)";
+    const awlFactor = totalFinalShare;
+
+    survivingHeirs.forEach((heir) => {
+      if (heir.finalShare > 0) {
+        heir.finalShare = heir.finalShare / awlFactor;
+      }
+    });
+    totalFinalShare = 1.0;
+  }
+
+  if (totalFinalShare < 0.9999 && !hasAsaba) {
+    reconciliationStatus = "Radd (Return)";
+
+    const residueForRadd = 1.0 - totalFinalShare;
+
+    const raddHeirs = survivingHeirs.filter(
+      (h) =>
+        h.classification === "As-hab al-Faraid" && !h.name_en.includes("Spouse")
+    );
+
+    const sumOfEligibleShares = raddHeirs.reduce(
+      (sum, h) => sum + h.finalShare,
+      0
+    );
+
+    if (sumOfEligibleShares > 0) {
+      raddHeirs.forEach((heir) => {
+        const proportion = heir.finalShare / sumOfEligibleShares;
+        const raddAmount = residueForRadd * proportion;
+
+        heir.finalShare += raddAmount;
+      });
+    }
+    totalFinalShare = 1.0;
   }
 
   return {
     netEstate: netEstate,
-    totalFractionAllocated: totalFaraidShare + residue,
+    totalFractionAllocated: totalFinalShare,
+    reconciliation: reconciliationStatus,
     shares: survivingHeirs.map((h) => ({
       heir: h.name_en,
       count: h.count,
@@ -115,7 +197,6 @@ exports.calculateShares = async (input) => {
       share_amount: h.finalShare * netEstate,
       status: h.status,
     })),
-    notes:
-      "Farā'id shares and initial reduction logic applied. Radd/Awl and precise Asaba distribution needed next.",
+    notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}`,
   };
 };
