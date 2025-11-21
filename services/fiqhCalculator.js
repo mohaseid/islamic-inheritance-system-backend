@@ -37,16 +37,16 @@ exports.calculateShares = async (input) => {
         classification: d.classification,
       }))
     );
+    // FIX APPLIED HERE: Using "Wife" since that's the name now in the database.
     console.log(
       "Spouse Data Retrieved via Map Lookup:",
-      detailsMap.get("Spouse (Wife)")
+      detailsMap.get("Wife")
     );
     // ---------------------------------------------------------------------------------
 
     heirsWithDetails = heirs.map((h) => ({
       ...h,
-      // If a heir name doesn't match a name_en key in the Map, this returns undefined,
-      // and classification/default_share will be missing, leading to zero shares.
+      // The frontend name (h.name) must match a key in detailsMap (d.name_en).
       ...detailsMap.get(h.name),
       isExcluded: false,
       finalShare: 0,
@@ -100,7 +100,7 @@ exports.calculateShares = async (input) => {
   );
 
   faraidHeirs.forEach((heir) => {
-    // This is 0 or undefined if the database lookup failed, leading to 0 shares.
+    // This should now be a non-zero value retrieved from the database
     let finalShare = heir.default_share;
 
     const reductionRules = allRules.filter(
