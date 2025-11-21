@@ -26,6 +26,8 @@ exports.calculateShares = async (input) => {
 
     heirsWithDetails = heirs.map((h) => ({
       ...h,
+      // IMPORTANT: If detailsMap.get(h.name) returns undefined, the properties
+      // (like name_en, classification) will also be undefined on the heir object.
       ...detailsMap.get(h.name),
       isExcluded: false,
       finalShare: 0,
@@ -113,6 +115,7 @@ exports.calculateShares = async (input) => {
     let totalAsabaPoints = 0;
 
     asabaHeirs.forEach((heir) => {
+      // FIX 1 (Already applied): Guards the includes calls in the Asaba block
       if (
         heir.name_en &&
         (heir.name_en.includes("Son") || heir.name_en.includes("Brother"))
@@ -145,8 +148,10 @@ exports.calculateShares = async (input) => {
     (sum, h) => sum + h.finalShare,
     0
   );
-  const hasAsaba = survivingHeirs.some((h) =>
-    h.classification.includes("Asaba")
+
+  // FIX 2: Guard the includes call for h.classification (Crashes here if classification is undefined)
+  const hasAsaba = survivingHeirs.some(
+    (h) => h.classification && h.classification.includes("Asaba")
   );
   let reconciliationStatus = "Balanced";
 
@@ -169,7 +174,10 @@ exports.calculateShares = async (input) => {
 
     const raddHeirs = survivingHeirs.filter(
       (h) =>
-        h.classification === "As-hab al-Faraid" && !h.name_en.includes("Spouse")
+        h.classification === "As-hab al-Faraid" &&
+        // FIX 3: Guard the includes call for h.name_en (Crashes here if name_en is undefined)
+        h.name_en &&
+        !h.name_en.includes("Spouse")
     );
 
     const sumOfEligibleShares = raddHeirs.reduce(
