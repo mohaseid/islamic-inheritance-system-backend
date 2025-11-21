@@ -1,6 +1,5 @@
-
 -- 1. HeirTypes Table
-CREATE TABLE HeirTypes (
+CREATE TABLE IF NOT EXISTS HeirTypes (
     heir_type_id SERIAL PRIMARY KEY,
     name_en VARCHAR(50) NOT NULL,
     name_ar VARCHAR(50),
@@ -9,7 +8,7 @@ CREATE TABLE HeirTypes (
 );
 
 -- 2. FiqhRules Table
-CREATE TABLE FiqhRules (
+CREATE TABLE IF NOT EXISTS FiqhRules (
     rule_id SERIAL PRIMARY KEY,
     heir_type_id INT REFERENCES HeirTypes(heir_type_id) ON DELETE CASCADE,
     condition_heir_id INT REFERENCES HeirTypes(heir_type_id) ON DELETE SET NULL,
@@ -19,7 +18,7 @@ CREATE TABLE FiqhRules (
 );
 
 -- 3. Glossary Table
-CREATE TABLE Glossary (
+CREATE TABLE IF NOT EXISTS Glossary (
     term_id SERIAL PRIMARY KEY,
     term_en VARCHAR(100) NOT NULL,
     term_ar VARCHAR(100),
