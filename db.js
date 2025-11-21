@@ -1,13 +1,24 @@
 const { Pool } = require("pg");
 require("dotenv").config();
 
-const pool = new Pool({
+let poolConfig = {
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
   database: process.env.DB_DATABASE,
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
-});
+};
+
+if (process.env.DATABASE_URL) {
+  poolConfig = {
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false,
+    },
+  };
+}
+
+const pool = new Pool(poolConfig);
 
 async function checkConnection() {
   try {
