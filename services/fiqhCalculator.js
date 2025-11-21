@@ -113,11 +113,14 @@ exports.calculateShares = async (input) => {
     let totalAsabaPoints = 0;
 
     asabaHeirs.forEach((heir) => {
-      if (heir.name_en.includes("Son") || heir.name_en.includes("Brother")) {
+      if (
+        heir.name_en &&
+        (heir.name_en.includes("Son") || heir.name_en.includes("Brother"))
+      ) {
         heir.points = heir.count * 2;
       } else if (
-        heir.name_en.includes("Daughter") ||
-        heir.name_en.includes("Sister")
+        heir.name_en &&
+        (heir.name_en.includes("Daughter") || heir.name_en.includes("Sister"))
       ) {
         heir.points = heir.count * 1;
       } else {
