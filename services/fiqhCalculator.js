@@ -237,7 +237,7 @@ exports.calculateShares = async (input) => {
       }
     }
 
-    // Update the heir's share with the new decimal value for Step 6/7/8
+    // Update the heir's share with the new decimal value for Step 6
     updatedHeir.default_share = newDecimalShare;
 
     // 4. Asaba bi-ghayrihi (Daughter with Son) Rule
@@ -261,17 +261,18 @@ exports.calculateShares = async (input) => {
   let totalFaraidShareFraction = { num: 0, den: 1 };
 
   survivingHeirs = survivingHeirs.map((heir) => {
+    // Only process Faraid heirs with a fixed share
     if (
       heir.classification !== "As-hab al-Faraid" ||
       heir.default_share === null
     ) {
-      return heir; // Skip non-Faraid heirs or those set to null share (like Asaba father)
+      return heir;
     }
 
     let updatedHeir = { ...heir };
     let finalShareFraction = toFraction(updatedHeir.default_share);
 
-    // Apply Reduction Rules (from database, if any)
+    // Apply Reduction Rules (from database, if any) - Assumed none apply for this case
     const reductionRules = allRules.filter(
       (r) =>
         r.condition_type === "Reduction" && r.primary_heir_name === heir.name_en
@@ -289,7 +290,7 @@ exports.calculateShares = async (input) => {
     });
 
     if (finalShareFraction.num > 0) {
-      // MANDATORY STEP: Set the exact fraction for all Faraid heirs.
+      // Set the exact fraction for all Faraid heirs.
       updatedHeir.finalShareFraction = finalShareFraction;
 
       // Calculate total Faraid share based on the collective share for the group
@@ -307,84 +308,15 @@ exports.calculateShares = async (input) => {
     return updatedHeir;
   });
 
-  // LOGGING: Check Husband's share before Reconciliation
-  const husband = survivingHeirs.find((h) => h.name_en === "Husband");
-  if (husband) {
-    console.log(
-      `[DEBUG] Husband's share before Radd/Awl: ${husband.finalShareFraction.num}/${husband.finalShareFraction.den}`
-    );
-  }
+  // 7. Apply Residue (Asaba) Rules - SKIPPED FOR RADD CASE
 
-  // 7. Apply Residue (Asaba) Rules
   const oneWhole = { num: 1, den: 1 };
-  let residueFraction = subtractFractions(oneWhole, totalFaraidShareFraction);
-  let asabaHeirs = survivingHeirs.filter((h) => h.classification === "Asaba");
-
-  // Convert residueFraction to decimal for proportional Asaba calculation (simpler)
-  let residueDecimal = toDecimal(residueFraction);
-
-  if (residueDecimal > 1e-9 && asabaHeirs.length > 0) {
-    let totalAsabaPoints = 0;
-
-    survivingHeirs = survivingHeirs.map((heir) => {
-      if (heir.classification !== "Asaba") return heir;
-
-      let updatedHeir = { ...heir };
-      let points = 0;
-
-      // Assign points for 2:1 male:female ratio
-      if (
-        heir.name_en &&
-        (heir.name_en.includes("Son") ||
-          heir.name_en.includes("Brother") ||
-          heir.name_en === "Father")
-      ) {
-        points = heir.count * 2;
-      } else if (
-        heir.name_en &&
-        (heir.name_en.includes("Daughter") || heir.name_en.includes("Sister"))
-      ) {
-        points = heir.count * 1;
-      } else {
-        points = 0;
-      }
-
-      updatedHeir.points = points;
-      totalAsabaPoints += points;
-      return updatedHeir;
-    });
-
-    if (totalAsabaPoints > 0) {
-      survivingHeirs = survivingHeirs.map((heir) => {
-        if (heir.classification !== "Asaba" || heir.points === 0) return heir;
-
-        let updatedHeir = { ...heir };
-        // Calculate the Asaba share using decimals for proportion and convert back to fraction
-        const asabaShareDecimal =
-          residueDecimal * (updatedHeir.points / totalAsabaPoints);
-
-        // Convert to a fraction
-        const asabaShareFraction = toFraction(asabaShareDecimal);
-
-        updatedHeir.finalShareFraction = addFractions(
-          updatedHeir.finalShareFraction,
-          asabaShareFraction
-        );
-
-        updatedHeir.status = updatedHeir.status.includes("ASABA")
-          ? updatedHeir.status +
-            ` (Allocated Residue of ${asabaShareDecimal.toFixed(4)})`
-          : `ASABA: Allocated Residue of ${asabaShareDecimal.toFixed(4)}`;
-        updatedHeir.classification = "Asaba (Residue)";
-        return updatedHeir;
-      });
-    }
-  }
 
   // 8. Reconciliation (Awl and Radd)
 
   // Recalculate total share BEFORE RADD/AWL for accurate check
-  totalFinalShareFraction = survivingHeirs.reduce(
+  // Note: Only Faraid shares (set in Step 6) are summed here.
+  let totalFinalShareFraction = survivingHeirs.reduce(
     (sumFraction, h) => addFractions(sumFraction, h.finalShareFraction),
     { num: 0, den: 1 }
   );
@@ -399,12 +331,10 @@ exports.calculateShares = async (input) => {
   if (totalFinalShareDecimal > 1.0001) {
     reconciliationStatus = "Awl (Increase)";
 
-    // Awl factor is the total fraction itself
     const awlFactor = totalFinalShareFraction;
 
     survivingHeirs = survivingHeirs.map((heir) => {
       let updatedHeir = { ...heir };
-      // Deep clone the share fraction for safety before mutation
       updatedHeir.finalShareFraction = { ...heir.finalShareFraction };
 
       if (updatedHeir.finalShareFraction.num > 0) {
@@ -424,12 +354,12 @@ exports.calculateShares = async (input) => {
   if (totalFinalShareDecimal < 0.9999 && !hasAsaba) {
     reconciliationStatus = "Radd (Return)";
 
-    // Spouses must be excluded from receiving Radd
+    // Identify Spouses
     const spouseHeirs = survivingHeirs.filter(
       (h) => h.name_en === "Husband" || h.name_en === "Wife"
     );
 
-    // Use the *current* fixed share of the spouse(s) for the pool calculation.
+    // The fixed, unchangeable share of the spouse(s)
     const spouseShareSumFraction = spouseHeirs.reduce(
       (sum, h) => addFractions(sum, h.finalShareFraction),
       { num: 0, den: 1 }
@@ -456,26 +386,26 @@ exports.calculateShares = async (input) => {
       { num: 0, den: 1 }
     );
 
-    // LOGGING: Check Radd Calculation values
-    console.log(
-      `[DEBUG] Radd Init: Spouse Share Sum: ${spouseShareSumFraction.num}/${spouseShareSumFraction.den}. Radd Pool: ${raddPoolFraction.num}/${raddPoolFraction.den}. Eligible Sum: ${sumOfEligibleSharesFraction.num}/${sumOfEligibleSharesFraction.den}`
-    );
-
     if (sumOfEligibleSharesFraction.num > 0) {
       survivingHeirs = survivingHeirs.map((heir) => {
         let updatedHeir = { ...heir };
 
-        // CRITICAL FIX: Ensure the share object is deep-cloned before any Radd-related logic
-        updatedHeir.finalShareFraction = { ...heir.finalShareFraction };
-
-        // Check if this heir is eligible for Radd
+        // CRITICAL STEP: Reset the share for safety and re-calculate only if necessary
+        const isSpouse = spouseHeirs.some(
+          (s) => s.name_en === updatedHeir.name_en
+        );
         const isRaddEligible = raddHeirs.some(
           (r) => r.name_en === updatedHeir.name_en
         );
 
-        // Spouses' shares are FIXED, Radd-eligible heirs' shares are RECALCULATED based on the Radd Pool.
-        if (isRaddEligible) {
-          // The proportion based on their initial share: Proportion = (Heir Share / Sum of Eligible Shares)
+        if (isSpouse) {
+          // Spouse's share is finalized and is their original share from Step 6.
+          updatedHeir.status += ` (Radd: Fixed Share Maintained)`;
+          // finalShareFraction is already set correctly from Step 6, no change needed.
+        } else if (isRaddEligible) {
+          // Radd-eligible heirs' shares are RECALCULATED based on the Radd Pool.
+
+          // Proportion = (Heir Share / Sum of Eligible Shares)
           const proportionFraction = divideFractions(
             updatedHeir.finalShareFraction,
             sumOfEligibleSharesFraction
@@ -488,12 +418,14 @@ exports.calculateShares = async (input) => {
           );
 
           updatedHeir.status += ` (Radd applied: New share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
-        } else if (spouseHeirs.some((s) => s.name_en === updatedHeir.name_en)) {
-          // Spouse's share is maintained (already preserved via deep clone)
-          // This line is for clarity and debugging, ensuring the value is what we expect.
-          updatedHeir.status += ` (Spouse: Share maintained at ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
+        } else {
+          // If not spouse and not Radd eligible (e.g., a non-Faraid heir with 0 share, or excluded heir), set to 0
+          updatedHeir.finalShareFraction = { num: 0, den: 1 };
+          if (!updatedHeir.isExcluded) {
+            updatedHeir.status =
+              "NOT ALLOCATED (Not Spouse, Not Radd Eligible)";
+          }
         }
-        // If the heir is not eligible for Radd or a spouse, the initial deep-cloned fraction is returned as is.
         return updatedHeir;
       });
     }
