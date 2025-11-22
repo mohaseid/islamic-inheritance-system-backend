@@ -314,238 +314,256 @@ exports.calculateShares = async (input) => {
     return updatedHeir;
   });
 
-  // Recalculate total share after fixed Faraid allocation
-  let totalFixedFaraidShareFraction = survivingHeirs.reduce(
+  // Recalculate total share after fixed Faraid allocation (Step 6)
+  let totalFinalShareFraction = survivingHeirs.reduce(
     (sumFraction, h) => addFractions(sumFraction, h.finalShareFraction),
     { num: 0, den: 1 }
   );
-  let totalFixedFaraidShareDecimal = toDecimal(totalFixedFaraidShareFraction);
+  let totalFinalShareDecimal = toDecimal(totalFinalShareFraction);
 
   const oneWhole = { num: 1, den: 1 };
   let reconciliationStatus = "Balanced";
+  const hasAsaba = survivingHeirs.some(
+    (h) => h.classification && h.classification.includes("Asaba")
+  );
 
-  // --- START HIGH-PRIORITY SINGLE HEIR RADD CHECK (The new fix) ---
+  // --- START HIGH-PRIORITY SINGLE HEIR CHECK AND EARLY EXIT (Fix for Husband-only) ---
+  if (survivingHeirs.length === 1) {
+    const onlyHeir = survivingHeirs[0];
+    const isSpouse =
+      onlyHeir.name_en === "Husband" || onlyHeir.name_en === "Wife";
+    const isFaraid = onlyHeir.classification === "As-hab al-Faraid" || isSpouse;
 
-  if (
-    survivingHeirs.length === 1 &&
-    totalFixedFaraidShareDecimal < 0.9999 &&
-    totalFixedFaraidShareDecimal > 0
-  ) {
-    // Rule: If only one Faraid heir (e.g., Husband 1/2, Single Daughter 1/2) survives
-    // and there is residue, they take the entire estate (1/1).
-
-    survivingHeirs[0].finalShareFraction = oneWhole;
-    survivingHeirs[0].status +=
-      " (Radd applied: Only heir takes full estate, 1/1)";
-
-    // Update totals to 100% immediately
-    totalFixedFaraidShareFraction = oneWhole;
-    totalFixedFaraidShareDecimal = 1.0;
-    reconciliationStatus = "Radd (Return - Single Heir)";
-
-    // Early exit/skip remaining Radd and Asaba checks as allocation is complete
-    // We will skip to step 9 (Final Output) after ensuring totals are correct.
-  } else {
-    // --- STANDARD ASABA AND RADD LOGIC FOR MULTIPLE HEIRS ---
-
-    // 7. Apply Residue (Asaba) Rules
-    const hasAsaba = survivingHeirs.some(
-      (h) => h.classification && h.classification.includes("Asaba")
-    );
-    let residueFraction = subtractFractions(
-      oneWhole,
-      totalFixedFaraidShareFraction
-    );
-    let residueDecimal = toDecimal(residueFraction);
-
-    if (residueDecimal > 0.0001) {
-      const asabaHeirs = survivingHeirs.filter(
-        (h) => h.classification && h.classification.includes("Asaba")
-      );
-
-      if (asabaHeirs.length > 0) {
-        // Calculate the relative weight of the Asaba group for distribution
-        const totalAsabaWeight = asabaHeirs.reduce((sum, h) => {
-          if (
-            h.name_en === "Son" ||
-            (h.name_en === "Daughter" && sonIsPresent)
-          ) {
-            return sum + (h.name_en === "Son" ? h.count * 2 : h.count * 1);
-          }
-          // Other Asaba heirs (like Father with no descendants)
-          return sum + h.count;
-        }, 0);
-
-        survivingHeirs = survivingHeirs.map((heir) => {
-          let updatedHeir = { ...heir };
-
-          if (
-            updatedHeir.classification &&
-            updatedHeir.classification.includes("Asaba")
-          ) {
-            let weight = 0;
-
-            if (
-              updatedHeir.name_en === "Son" ||
-              (updatedHeir.name_en === "Daughter" && sonIsPresent)
-            ) {
-              // Son gets 2 shares, Daughter gets 1 share (Bi-ghayrihi)
-              weight =
-                updatedHeir.name_en === "Son"
-                  ? updatedHeir.count * 2
-                  : updatedHeir.count * 1;
-            } else if (
-              updatedHeir.name_en === "Father" &&
-              !descendantIsPresent
-            ) {
-              // Father as pure Asaba gets all residue
-              weight = updatedHeir.count;
-            }
-
-            if (totalAsabaWeight > 0) {
-              // Calculate the share fraction of the residue
-              const heirFractionOfResidue = {
-                num: weight,
-                den: totalAsabaWeight,
-              };
-
-              // Multiply residue by the heir's proportion
-              const finalResidueShare = multiplyFractions(
-                residueFraction,
-                heirFractionOfResidue
-              );
-
-              // Add the residue share to the heir's final share
-              updatedHeir.finalShareFraction = addFractions(
-                updatedHeir.finalShareFraction,
-                finalResidueShare
-              );
-              updatedHeir.status = `ASABA: Received ${finalResidueShare.num}/${finalResidueShare.den} of the residue.`;
-            }
-          }
-          return updatedHeir;
-        });
-        // Recalculate totals after Asaba distribution
-        totalFixedFaraidShareFraction = oneWhole;
-        totalFixedFaraidShareDecimal = 1.0;
-      }
+    // Check for single Faraid heir with residue or single Asaba heir. They take 100%.
+    if (
+      (isFaraid &&
+        totalFinalShareDecimal < 0.9999 &&
+        totalFinalShareDecimal > 0) ||
+      onlyHeir.classification.includes("Asaba")
+    ) {
+      // This is the core fix: Force 100% allocation for the single surviving heir.
+      onlyHeir.finalShareFraction = oneWhole;
+      onlyHeir.status +=
+        " (Radd/Asaba applied: Only heir takes full estate, 1/1)";
+      reconciliationStatus = isFaraid
+        ? "Radd (Return - Single Heir)"
+        : "Balanced (Asaba)";
+      totalFinalShareFraction = oneWhole;
+      totalFinalShareDecimal = 1.0;
+    } else {
+      // If the single heir already has 100% or 0%, the current state is the final state.
     }
 
-    // 8. Reconciliation (Awl and Radd)
+    // Allocation is finalized, return results now.
+    return {
+      netEstate: netEstate,
+      totalFractionAllocated: totalFinalShareDecimal,
+      reconciliation: reconciliationStatus,
+      shares: survivingHeirs.map((h) => {
+        const finalShareDecimal = toDecimal(h.finalShareFraction);
+        return {
+          heir: h.name_en,
+          count: h.count,
+          classification: h.classification,
+          share_fraction_of_total: finalShareDecimal,
+          share_amount: finalShareDecimal * netEstate,
+          status: h.status,
+        };
+      }),
+      notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}. Total Final Fraction: ${totalFinalShareFraction.num}/${totalFinalShareFraction.den}`,
+    };
+  }
+  // --- END HIGH-PRIORITY SINGLE HEIR CHECK AND EARLY EXIT ---
 
-    // Recalculate total share after Asaba/Faraid processing
-    let totalFinalShareFraction = survivingHeirs.reduce(
-      (sumFraction, h) => addFractions(sumFraction, h.finalShareFraction),
-      { num: 0, den: 1 }
+  // 7. Apply Residue (Asaba) Rules (Multi-heir path)
+  let residueFraction = subtractFractions(oneWhole, totalFinalShareFraction);
+  let residueDecimal = toDecimal(residueFraction);
+
+  if (residueDecimal > 0.0001) {
+    const asabaHeirs = survivingHeirs.filter(
+      (h) => h.classification && h.classification.includes("Asaba")
     );
-    let totalFinalShareDecimal = toDecimal(totalFinalShareFraction);
 
-    // Awl (Increase): Total share exceeds 1.0
-    if (totalFinalShareDecimal > 1.0001) {
-      reconciliationStatus = "Awl (Increase)";
-
-      const awlFactor = totalFinalShareFraction;
+    if (asabaHeirs.length > 0) {
+      // Calculate the relative weight of the Asaba group for distribution
+      const totalAsabaWeight = asabaHeirs.reduce((sum, h) => {
+        if (h.name_en === "Son" || (h.name_en === "Daughter" && sonIsPresent)) {
+          return sum + (h.name_en === "Son" ? h.count * 2 : h.count * 1);
+        }
+        // Other Asaba heirs (like Father with no descendants)
+        return sum + h.count;
+      }, 0);
 
       survivingHeirs = survivingHeirs.map((heir) => {
         let updatedHeir = { ...heir };
-        if (updatedHeir.finalShareFraction.num > 0) {
-          // New Share = Old Share / Awl Factor
-          updatedHeir.finalShareFraction = divideFractions(
-            updatedHeir.finalShareFraction,
-            awlFactor
-          );
+
+        if (
+          updatedHeir.classification &&
+          updatedHeir.classification.includes("Asaba")
+        ) {
+          let weight = 0;
+
+          if (
+            updatedHeir.name_en === "Son" ||
+            (updatedHeir.name_en === "Daughter" && sonIsPresent)
+          ) {
+            // Son gets 2 shares, Daughter gets 1 share (Bi-ghayrihi)
+            weight =
+              updatedHeir.name_en === "Son"
+                ? updatedHeir.count * 2
+                : updatedHeir.count * 1;
+          } else if (updatedHeir.name_en === "Father" && !descendantIsPresent) {
+            // Father as pure Asaba gets all residue
+            weight = updatedHeir.count;
+          }
+
+          if (totalAsabaWeight > 0) {
+            // Calculate the share fraction of the residue
+            const heirFractionOfResidue = {
+              num: weight,
+              den: totalAsabaWeight,
+            };
+
+            // Multiply residue by the heir's proportion
+            const finalResidueShare = multiplyFractions(
+              residueFraction,
+              heirFractionOfResidue
+            );
+
+            // Add the residue share to the heir's final share
+            updatedHeir.finalShareFraction = addFractions(
+              updatedHeir.finalShareFraction,
+              finalResidueShare
+            );
+            updatedHeir.status = `ASABA: Received ${finalResidueShare.num}/${finalResidueShare.den} of the residue.`;
+          }
         }
         return updatedHeir;
       });
-      totalFixedFaraidShareFraction = oneWhole;
-      totalFixedFaraidShareDecimal = 1.0;
+      // Recalculate totals after Asaba distribution
+      totalFinalShareFraction = oneWhole;
+      totalFinalShareDecimal = 1.0;
     }
+  }
 
-    // Radd (Return): Residue remains and there is no Asaba heir (for multiple heirs)
-    if (totalFinalShareDecimal < 0.9999 && !hasAsaba) {
-      reconciliationStatus = "Radd (Return)";
+  // 8. Reconciliation (Awl and Radd)
 
-      // Calculate the total fixed share for all spouses
-      const spouseHeirs = survivingHeirs.filter(
-        (h) => h.name_en === "Husband" || h.name_en === "Wife"
-      );
-      let spouseFixedShareFractionSum = spouseHeirs.reduce(
-        (sum, h) => addFractions(sum, h.finalShareFraction),
-        { num: 0, den: 1 }
-      );
+  // Recalculate total share after Asaba/Faraid processing
+  totalFinalShareFraction = survivingHeirs.reduce(
+    (sumFraction, h) => addFractions(sumFraction, h.finalShareFraction),
+    { num: 0, den: 1 }
+  );
+  totalFinalShareDecimal = toDecimal(totalFinalShareFraction);
 
-      // 1. The fraction available for redistribution is 1 - Spouse Share Sum
-      const raddPoolFraction = subtractFractions(
-        oneWhole,
-        spouseFixedShareFractionSum
-      );
+  // Awl (Increase): Total Faraid share exceeds 1.0
+  if (totalFinalShareDecimal > 1.0001) {
+    reconciliationStatus = "Awl (Increase)";
 
-      // 2. Radd-eligible heirs (non-spouse Faraid heirs with a share)
-      const raddEligibleHeirs = survivingHeirs.filter(
-        (h) =>
-          h.classification === "As-hab al-Faraid" &&
-          h.finalShareFraction.num > 0 &&
-          !h.name_en.includes("Wife") &&
-          !h.name_en.includes("Husband")
-      );
+    const awlFactor = totalFinalShareFraction;
 
-      // 3. Calculate the sum of shares *eligible for Radd* const sumOfEligibleSharesFraction = raddEligibleHeirs.reduce(
-      (sum, h) => addFractions(sum, h.finalShareFraction), { num: 0, den: 1 };
+    survivingHeirs = survivingHeirs.map((heir) => {
+      let updatedHeir = { ...heir };
+      updatedHeir.finalShareFraction = { ...heir.finalShareFraction };
 
-      if (sumOfEligibleSharesFraction.num > 0) {
-        survivingHeirs = survivingHeirs.map((heir) => {
-          let updatedHeir = { ...heir };
-          const isSpouse =
-            updatedHeir.name_en === "Husband" || updatedHeir.name_en === "Wife";
+      if (updatedHeir.finalShareFraction.num > 0) {
+        // New Share = Old Share / Awl Factor
+        updatedHeir.finalShareFraction = divideFractions(
+          updatedHeir.finalShareFraction,
+          awlFactor
+        );
+      }
+      return updatedHeir;
+    });
+    totalFinalShareFraction = oneWhole;
+    totalFinalShareDecimal = 1.0;
+  }
 
-          if (isSpouse) {
-            // Spouse keeps their fixed share (locked in Step 6).
-            const fixedShare = heir.finalShareFraction;
-            updatedHeir.finalShareFraction = { ...fixedShare };
-            updatedHeir.status = `FARAD: Fixed Share Maintained at ${fixedShare.num}/${fixedShare.den} (Not Radd Eligible)`;
-          } else {
-            // Non-Spouse Radd-eligible heirs
-            const eligibleHeirData = raddEligibleHeirs.find(
-              (r) => r.name_en === updatedHeir.name_en
+  // Radd (Return): Residue remains and there is no Asaba heir (for multiple heirs)
+  if (totalFinalShareDecimal < 0.9999 && !hasAsaba) {
+    reconciliationStatus = "Radd (Return)";
+
+    // Calculate the total fixed share for all spouses
+    const spouseHeirs = survivingHeirs.filter(
+      (h) => h.name_en === "Husband" || h.name_en === "Wife"
+    );
+    let spouseFixedShareFractionSum = spouseHeirs.reduce(
+      (sum, h) => addFractions(sum, h.finalShareFraction),
+      { num: 0, den: 1 }
+    );
+
+    // 1. The fraction available for redistribution is 1 - Spouse Share Sum
+    const raddPoolFraction = subtractFractions(
+      oneWhole,
+      spouseFixedShareFractionSum
+    );
+
+    // 2. Radd-eligible heirs (non-spouse Faraid heirs with a share)
+    const raddEligibleHeirs = survivingHeirs.filter(
+      (h) =>
+        h.classification === "As-hab al-Faraid" &&
+        h.finalShareFraction.num > 0 &&
+        !h.name_en.includes("Wife") &&
+        !h.name_en.includes("Husband")
+    );
+
+    // 3. Calculate the sum of shares *eligible for Radd*
+    const sumOfEligibleSharesFraction = raddEligibleHeirs.reduce(
+      (sum, h) => addFractions(sum, h.finalShareFraction),
+      { num: 0, den: 1 }
+    );
+
+    if (sumOfEligibleSharesFraction.num > 0) {
+      survivingHeirs = survivingHeirs.map((heir) => {
+        let updatedHeir = { ...heir };
+        const isSpouse =
+          updatedHeir.name_en === "Husband" || updatedHeir.name_en === "Wife";
+
+        if (isSpouse) {
+          // Spouse keeps their fixed share (locked in Step 6).
+          const fixedShare = heir.finalShareFraction;
+          updatedHeir.finalShareFraction = { ...fixedShare };
+          updatedHeir.status = `FARAD: Fixed Share Maintained at ${fixedShare.num}/${fixedShare.den} (Not Radd Eligible)`;
+        } else {
+          // Non-Spouse Radd-eligible heirs
+          const eligibleHeirData = raddEligibleHeirs.find(
+            (r) => r.name_en === updatedHeir.name_en
+          );
+
+          if (eligibleHeirData) {
+            // Proportion = (Heir Share / Sum of Eligible Shares)
+            const proportionFraction = divideFractions(
+              eligibleHeirData.finalShareFraction,
+              sumOfEligibleSharesFraction
             );
 
-            if (eligibleHeirData) {
-              // Proportion = (Heir Share / Sum of Eligible Shares)
-              const proportionFraction = divideFractions(
-                eligibleHeirData.finalShareFraction,
-                sumOfEligibleSharesFraction
-              );
+            // The new total share for the Radd-eligible heir is: Radd Pool * Proportion
+            updatedHeir.finalShareFraction = multiplyFractions(
+              raddPoolFraction,
+              proportionFraction
+            );
 
-              // The new total share for the Radd-eligible heir is: Radd Pool * Proportion
-              updatedHeir.finalShareFraction = multiplyFractions(
-                raddPoolFraction,
-                proportionFraction
-              );
-
-              updatedHeir.status += ` (Radd applied: New total share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
-            } else {
-              // All other non-spouse, non-eligible heirs get zero.
-              updatedHeir.finalShareFraction = { num: 0, den: 1 };
-              if (!updatedHeir.isExcluded) {
-                updatedHeir.status = updatedHeir.status.includes("ASABA")
-                  ? updatedHeir.status + " (Residue 0)"
-                  : "NOT ALLOCATED";
-              }
+            updatedHeir.status += ` (Radd applied: New total share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
+          } else {
+            // All other non-spouse, non-eligible heirs get zero.
+            updatedHeir.finalShareFraction = { num: 0, den: 1 };
+            if (!updatedHeir.isExcluded) {
+              updatedHeir.status = updatedHeir.status.includes("ASABA")
+                ? updatedHeir.status + " (Residue 0)"
+                : "NOT ALLOCATED";
             }
           }
-          return updatedHeir;
-        });
-      }
-      totalFixedFaraidShareFraction = oneWhole;
-      totalFixedFaraidShareDecimal = 1.0;
+        }
+        return updatedHeir;
+      });
     }
-    // --- END STANDARD ASABA AND RADD LOGIC ---
+    totalFinalShareFraction = oneWhole;
+    totalFinalShareDecimal = 1.0;
   }
 
   // 9. Final Output
   return {
     netEstate: netEstate,
-    totalFractionAllocated: totalFixedFaraidShareDecimal,
+    totalFractionAllocated: totalFinalShareDecimal,
     reconciliation: reconciliationStatus,
     shares: survivingHeirs.map((h) => {
       // Convert the final exact fraction to a decimal for display
@@ -561,6 +579,6 @@ exports.calculateShares = async (input) => {
         status: h.status,
       };
     }),
-    notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}. Total Final Fraction: ${totalFixedFaraidShareFraction.num}/${totalFixedFaraidShareFraction.den}`,
+    notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}. Total Final Fraction: ${totalFinalShareFraction.num}/${totalFinalShareFraction.den}`,
   };
 };
