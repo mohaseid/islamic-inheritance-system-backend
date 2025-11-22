@@ -1,4 +1,4 @@
-const pool = require("../db");
+const { pool } = require("../db"); // Ensure this imports from the new db.js
 
 // --- UTILITY FUNCTIONS FOR EXACT FRACTION ARITHMETIC (No changes here) ---
 
@@ -60,7 +60,7 @@ function addFractions(f1, f2) {
   const newNum = f1.num * f2.den + f2.num * f1.den;
   const newDen = f1.den * f2.den;
   const commonDivisor = gcd(newNum, newDen);
-  return { num: newNum / commonDivisor, den: newNum / commonDivisor };
+  return { num: newNum / commonDivisor, den: newDen / commonDivisor };
 }
 
 /**
