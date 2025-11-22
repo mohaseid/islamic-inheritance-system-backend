@@ -1,6 +1,13 @@
 const { Pool } = require("pg");
 require("dotenv").config();
 
+// Define default resilience parameters for the connection pool
+const defaultPoolOptions = {
+  max: 20, // Max number of clients in the pool (adjust based on load)
+  idleTimeoutMillis: 30000, // Close idle clients after 30s
+  connectionTimeoutMillis: 2000, // Terminate a connection attempt after 2s
+};
+
 let poolConfig = {
   // Default configuration using individual environment variables
   user: process.env.DB_USER,
@@ -8,12 +15,14 @@ let poolConfig = {
   database: process.env.DB_DATABASE,
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
+  ...defaultPoolOptions, // Add resilience options
 };
 
 // Override with connectionString if DATABASE_URL is provided (Standard for Render/Heroku)
 if (process.env.DATABASE_URL) {
   poolConfig = {
     connectionString: process.env.DATABASE_URL,
+    ...defaultPoolOptions, // Keep resilience options
     // CRITICAL: Required for secure connections to remote PostgreSQL instances (like Render's)
     ssl: {
       rejectUnauthorized: false,

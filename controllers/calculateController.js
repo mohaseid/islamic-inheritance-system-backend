@@ -3,7 +3,7 @@ const fiqhCalculator = require("../services/fiqhCalculator");
 /**
  * @swagger
  * paths:
- * /api/v1/calculate-shares:
+ * /api/calculate-shares:
  * post:
  * tags:
  * - Calculation
@@ -100,28 +100,60 @@ const fiqhCalculator = require("../services/fiqhCalculator");
  * example: An internal error occurred during the Fiqh calculation process.
  */
 exports.calculateShares = async (req, res) => {
+  // The request body contains all the necessary input data
   const input = req.body;
 
-  // Input validation: Ensure the heirs list is present and not empty.
+  // --- Input Validation ---
+
+  // 1. Check for heirs list presence and contents
   if (!input.heirs || input.heirs.length === 0) {
     return res
       .status(400)
       .json({ error: "No heirs provided for calculation." });
   }
 
-  // Ensure assets and liabilities are defined, matching the Swagger schema's 'required' fields.
+  // 2. Check for required financial fields
+  // Using loose comparison for 'undefined' to check if the property exists
   if (input.assets === undefined || input.liabilities === undefined) {
     return res
       .status(400)
       .json({ error: "Assets and liabilities must be defined." });
   }
 
+  // 3. Ensure assets and liabilities are non-negative numbers
+  if (
+    typeof input.assets !== "number" ||
+    input.assets < 0 ||
+    typeof input.liabilities !== "number" ||
+    input.liabilities < 0
+  ) {
+    return res
+      .status(400)
+      .json({ error: "Assets and liabilities must be non-negative numbers." });
+  }
+
+  // 4. Ensure deceased gender is provided
+  if (
+    !input.deceased ||
+    (input.deceased !== "male" && input.deceased !== "female")
+  ) {
+    return res
+      .status(400)
+      .json({ error: "Deceased gender (male/female) must be specified." });
+  }
+
+  // --- Fiqh Calculation ---
   try {
+    // Pass the validated input data to the specialized service layer for calculation
     const calculationResult = await fiqhCalculator.calculateShares(input);
 
+    // Send the successful result back to the client
     return res.status(200).json(calculationResult);
   } catch (error) {
+    // Handle any errors that occur during the calculation service logic
     console.error("Full Calculation Error:", error);
+
+    // Return a 500 status with a descriptive error message
     return res.status(500).json({
       error:
         error.message ||
