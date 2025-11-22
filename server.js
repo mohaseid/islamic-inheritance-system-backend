@@ -11,7 +11,9 @@ const app = express();
 
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({ origin: "*" }));
+app.use(
+  cors({ origin: "https://islamic-inheritance-system-frontend.vercel.app" })
+);
 
 app.use(express.json());
 
