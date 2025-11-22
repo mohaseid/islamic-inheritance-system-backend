@@ -129,44 +129,59 @@ exports.calculateShares = async (input) => {
   const oneWhole = { num: 1, den: 1 };
   let reconciliationStatus = "Balanced";
 
-  // --- DATABASE QUERIES (Outside of try/catch to let errors bubble up) ---
-
-  // 1. Retrieve Heir Details (Classification and Default Share)
-  const heirDetailsQuery = `
-          SELECT heir_type_id, name_en, classification, default_share 
-          FROM HeirTypes 
-          WHERE name_en = ANY($1::text[])
-      `;
-  const detailsResult = await pool.query(heirDetailsQuery, [
-    heirs.map((h) => h.name),
-  ]);
-  const detailsMap = new Map(detailsResult.rows.map((d) => [d.name_en, d]));
-
-  // 2. Map frontend heirs with database details
-  let heirsWithDetails = heirs.map((h) => ({
-    ...h,
-    ...detailsMap.get(h.name),
-    isExcluded: false,
-    finalShareFraction: { num: 0, den: 1 },
-    status: "PENDING",
-  }));
-
-  // 3. Retrieve Fiqh Rules (Exclusion and Reduction)
+  let heirsWithDetails = [];
+  let allRules = [];
   const heirNames = heirs.map((h) => h.name);
-  const ruleQuery = `
-          SELECT 
-              t1.name_en AS primary_heir_name,
-              t2.name_en AS condition_heir_name,
-              r.condition_type,
-              r.reduction_factor
-          FROM FiqhRules r
-          JOIN HeirTypes t1 ON r.heir_type_id = t1.heir_type_id
-          LEFT JOIN HeirTypes t2 ON r.condition_heir_id = t2.heir_type_id
-          WHERE t1.name_en = ANY($1::text[]) OR t2.name_en = ANY($1::text[]);
-      `;
-  const ruleResult = await pool.query(ruleQuery, [heirNames]);
-  const allRules = ruleResult.rows;
 
+  if (heirNames.length === 0) {
+    throw new Error("No heirs provided for calculation.");
+  }
+
+  // --- DATABASE QUERIES (Robust Error Handling) ---
+  try {
+    // 1. Retrieve Heir Details (Classification and Default Share)
+    const heirDetailsQuery = `
+            SELECT heir_type_id, name_en, classification, default_share 
+            FROM HeirTypes 
+            WHERE name_en = ANY($1::text[])
+        `;
+    // Using explicit array type in the query for robustness
+    const detailsResult = await pool.query(heirDetailsQuery, [heirNames]);
+    const detailsMap = new Map(detailsResult.rows.map((d) => [d.name_en, d]));
+
+    // 2. Map frontend heirs with database details
+    heirsWithDetails = heirs.map((h) => ({
+      ...h,
+      ...detailsMap.get(h.name),
+      isExcluded: false,
+      finalShareFraction: { num: 0, den: 1 },
+      status: "PENDING",
+    }));
+
+    // 3. Retrieve Fiqh Rules (Exclusion and Reduction)
+    const ruleQuery = `
+            SELECT 
+                t1.name_en AS primary_heir_name,
+                t2.name_en AS condition_heir_name,
+                r.condition_type,
+                r.reduction_factor
+            FROM FiqhRules r
+            JOIN HeirTypes t1 ON r.heir_type_id = t1.heir_type_id
+            LEFT JOIN HeirTypes t2 ON r.condition_heir_id = t2.heir_type_id
+            WHERE t1.name_en = ANY($1::text[]) OR t2.name_en = ANY($1::text[]);
+        `;
+    const ruleResult = await pool.query(ruleQuery, [heirNames]);
+    allRules = ruleResult.rows;
+  } catch (error) {
+    console.error(
+      "Database query failed during Fiqh calculation setup:",
+      error.stack
+    );
+    // Re-throw the error as a standard message for the frontend
+    throw new Error(
+      "Failed to calculate shares. Check database connection/heir names."
+    );
+  }
   // --- END DATABASE QUERIES ---
 
   // 1. Apply Exclusion (Hajb) Rules
@@ -200,7 +215,7 @@ exports.calculateShares = async (input) => {
   // Check if a Son is present (to switch Daughter to Asaba)
   const sonIsPresent = survivingHeirs.some((h) => h.name_en === "Son");
 
-  // === DYNAMIC SHARE ADJUSTMENTS BASED ON PRESENCE AND COUNT ===
+  // === DYNAMIC SHARE ADJUSTMENTS BASED ON PRESENCE AND COUNT (Steps 2, 3, 4, 5) ===
 
   survivingHeirs = survivingHeirs.map((heir) => {
     let updatedHeir = { ...heir };
