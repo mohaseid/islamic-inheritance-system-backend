@@ -6,8 +6,8 @@ const pool = require("../db");
  * Calculates the Greatest Common Divisor (GCD) of two numbers.
  * Used for simplifying fractions and finding common denominators.
  * @param {number} a
- * @param {number} b
  * @returns {number} GCD
+ * @param {number} b
  */
 function gcd(a, b) {
   return b ? gcd(b, a % b) : a;
@@ -285,7 +285,7 @@ exports.calculateShares = async (input) => {
 
       if (isConditionPresent && rule.reduction_factor !== null) {
         finalShareFraction = toFraction(rule.reduction_factor);
-        updatedHeir.status = `FARAD: Reduced to ${rule.reduction_factor} by ${rule.condition_heir_name}`;
+        updatedHeir.status = `FARAD: Reduced to ${finalShareFraction.num}/${finalShareFraction.den} by ${rule.condition_heir_name}`;
       }
     });
 
@@ -296,7 +296,7 @@ exports.calculateShares = async (input) => {
       // Calculate total Faraid share based on the collective share for the group
       totalFaraidShareFraction = addFractions(
         totalFaraidShareFraction,
-        updatedHeir.finalShareFraction
+        finalShareFraction
       );
 
       updatedHeir.status = updatedHeir.status.startsWith("FARAD")
@@ -310,7 +310,7 @@ exports.calculateShares = async (input) => {
   const spouseHeirs = survivingHeirs.filter(
     (h) => h.name_en === "Husband" || h.name_en === "Wife"
   );
-  let spouseFixedShareFraction = spouseHeirs.reduce(
+  let spouseFixedShareFractionSum = spouseHeirs.reduce(
     (sum, h) => addFractions(sum, h.finalShareFraction),
     { num: 0, den: 1 }
   );
@@ -360,10 +360,10 @@ exports.calculateShares = async (input) => {
   if (totalFinalShareDecimal < 0.9999 && !hasAsaba) {
     reconciliationStatus = "Radd (Return)";
 
-    // The fraction available for redistribution is 1 - Spouse Share Sum (e.g., 1 - 1/4 = 3/4)
+    // The fraction available for redistribution is 1 - Spouse Share Sum (1 - 1/4 = 3/4)
     const raddPoolFraction = subtractFractions(
       oneWhole,
-      spouseFixedShareFraction
+      spouseFixedShareFractionSum
     );
 
     // Radd-eligible heirs (non-spouse Faraid heirs with a share)
@@ -389,11 +389,13 @@ exports.calculateShares = async (input) => {
           updatedHeir.name_en === "Husband" || updatedHeir.name_en === "Wife";
 
         if (isSpouse) {
-          // RULE 1: Spouse always gets their fixed share (1/4 in this case).
-          // CRUCIAL FIX: Return immediately to prevent falling into the final 'else' block
-          updatedHeir.finalShareFraction = { ...spouseFixedShareFraction };
-          updatedHeir.status += ` (Radd: Fixed Share Maintained at ${spouseFixedShareFraction.num}/${spouseFixedShareFraction.den})`;
-          return updatedHeir;
+          // *** CRITICAL FIX: Ensure the individual heir's fixed share (from Step 6) is maintained ***
+          // Spouse is not eligible for Radd, so they keep their fixed share.
+          const fixedShare = heir.finalShareFraction;
+
+          updatedHeir.finalShareFraction = { ...fixedShare };
+          updatedHeir.status = `FARAD: Fixed Share Maintained at ${fixedShare.num}/${fixedShare.den} (Not Radd Eligible)`;
+          return updatedHeir; // Exit the loop iteration for the spouse
         }
 
         // Find the heir in the eligible list to get their initial share
@@ -416,9 +418,9 @@ exports.calculateShares = async (input) => {
             proportionFraction
           );
 
-          updatedHeir.status += ` (Radd applied: New share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
+          updatedHeir.status += ` (Radd applied: New total share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
         } else {
-          // RULE 3: All other non-spouse, non-eligible heirs (like Asaba with no residue) get zero.
+          // RULE 3: All other non-spouse, non-eligible heirs get zero.
           updatedHeir.finalShareFraction = { num: 0, den: 1 };
           if (!updatedHeir.isExcluded) {
             updatedHeir.status = updatedHeir.status.includes("ASABA")
