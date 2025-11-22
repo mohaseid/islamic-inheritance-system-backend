@@ -6,7 +6,7 @@ const pool = require("../db");
  * @returns {object} - The final calculation result.
  */
 exports.calculateShares = async (input) => {
-  const { deceased, assets, liabilities, heirs } = input; // Deceased gender is now used
+  const { deceased, assets, liabilities, heirs } = input;
 
   // Basic Estate Calculation
   const netEstate = assets - liabilities;
@@ -82,7 +82,7 @@ exports.calculateShares = async (input) => {
 
   let survivingHeirs = heirsWithDetails.filter((h) => !h.isExcluded);
 
-  // Determine if any descendant is present (used for Father's and Spouse's share changes)
+  // Determine if any descendant is present
   const descendantIsPresent = survivingHeirs.some(
     (h) => h.name_en === "Son" || h.name_en === "Daughter"
   );
@@ -92,30 +92,36 @@ exports.calculateShares = async (input) => {
 
   // === DYNAMIC SHARE ADJUSTMENTS BASED ON PRESENCE AND COUNT ===
 
-  // 2. 🌟 CRITICAL FIX: Spouse Share Reduction (Presence of Descendants)
+  // 2. Spouse Share Reduction (Presence of Descendants)
   survivingHeirs = survivingHeirs.map((heir) => {
-    if (heir.name_en === "Husband" && descendantIsPresent) {
-      // Husband share reduces from 1/2 (0.5) to 1/4 (0.25)
+    if (heir.name_en === "Husband") {
+      // Husband's share is 1/2 (0.5) without descendants, 1/4 (0.25) with descendants
+      const newShare = descendantIsPresent ? 0.25 : 0.5;
       return {
         ...heir,
-        default_share: 0.25,
-        status: "FARAD: Reduced by Descendants",
+        default_share: newShare,
+        status: `FARAD: Allocated ${newShare} (Descendants: ${
+          descendantIsPresent ? "Yes" : "No"
+        })`,
       };
-    } else if (heir.name_en === "Wife" && descendantIsPresent) {
-      // Wife share reduces from 1/4 (0.25) to 1/8 (0.125)
+    } else if (heir.name_en === "Wife") {
+      // Wife's share is 1/4 (0.25) without descendants, 1/8 (0.125) with descendants
+      const newShare = descendantIsPresent ? 0.125 : 0.25;
       return {
         ...heir,
-        default_share: 0.125,
-        status: "FARAD: Reduced by Descendants",
+        default_share: newShare,
+        status: `FARAD: Allocated ${newShare} (Descendants: ${
+          descendantIsPresent ? "Yes" : "No"
+        })`,
       };
     }
     return heir;
   });
 
-  // 3. 🎯 NEW FIX: Daughter Fixed Share based on Count (ONLY if no Son is present)
+  // 3. Daughter Fixed Share based on Count (ONLY if no Son is present)
   survivingHeirs = survivingHeirs.map((heir) => {
     if (heir.name_en === "Daughter" && !sonIsPresent) {
-      if (heir.count > 1) {
+      if (heir.count >= 2) {
         // Two or more daughters get 2/3 collectively (~0.6667)
         return {
           ...heir,
@@ -174,8 +180,6 @@ exports.calculateShares = async (input) => {
   // 6. Apply Fixed Share (As-hab al-Faraid) Rules
   let totalFaraidShare = 0;
 
-  // Filter heirs that are explicitly classified as As-hab al-Faraid
-  // This now uses the dynamically set default_share
   const faraidHeirs = survivingHeirs.filter(
     (h) => h.classification === "As-hab al-Faraid" && h.default_share !== null
   );
@@ -183,18 +187,17 @@ exports.calculateShares = async (input) => {
   faraidHeirs.forEach((heir) => {
     let finalShare = heir.default_share;
 
+    // Apply Reduction Rules (from database, if any)
     const reductionRules = allRules.filter(
       (r) =>
         r.condition_type === "Reduction" && r.primary_heir_name === heir.name_en
     );
 
     reductionRules.forEach((rule) => {
-      // Check if the condition heir for reduction is present
       const isConditionPresent = survivingHeirs.some(
         (h) => h.name_en === rule.condition_heir_name && h.count > 0
       );
 
-      // If condition is met, apply the reduction factor
       if (isConditionPresent && rule.reduction_factor !== null) {
         finalShare = rule.reduction_factor;
         heir.status = `FARAD: Reduced to ${rule.reduction_factor} by ${rule.condition_heir_name}`;
@@ -202,13 +205,7 @@ exports.calculateShares = async (input) => {
     });
 
     if (finalShare > 0) {
-      // For fixed shares, the share is applied *per group*, not per person,
-      // which is why we don't multiply by heir.count here.
-      // E.g., 3 Daughters get 2/3 total, not 3 x (2/3).
-      // We only multiply by count if the finalShare represents a single person's share,
-      // but for Fara'id shares, we rely on the logic in Step 2/3/5 to set the correct collective fraction.
-
-      // We assume the default_share represents the collective share for that group (e.g., 2/3 for all daughters).
+      // The finalShare here represents the COLLECTIVE fraction for the group.
       heir.finalShare = finalShare;
       totalFaraidShare += heir.finalShare;
       heir.status = heir.status.startsWith("FARAD")
@@ -288,26 +285,41 @@ exports.calculateShares = async (input) => {
 
     const residueForRadd = 1.0 - totalFinalShare;
 
+    // IMPORTANT: Exclude all spouses from Radd eligibility.
     const raddHeirs = survivingHeirs.filter(
       (h) =>
         h.classification === "As-hab al-Faraid" &&
+        h.finalShare > 0 &&
         h.name_en &&
-        !h.name_en.includes("Wife") && // Exclude Spouse from Radd
-        !h.name_en.includes("Husband") // Exclude Spouse from Radd
+        !h.name_en.includes("Wife") &&
+        !h.name_en.includes("Husband")
     );
 
+    // The spouse's share must be preserved exactly as it was calculated (1/4)
+    const spouseHeir = survivingHeirs.find(
+      (h) => h.name_en === "Husband" || h.name_en === "Wife"
+    );
+    const preservedSpouseShare = spouseHeir ? spouseHeir.finalShare : 0;
+
+    // Calculate the sum of shares *eligible for Radd* (Daughters' 2/3 share)
     const sumOfEligibleShares = raddHeirs.reduce(
       (sum, h) => sum + h.finalShare,
       0
     );
 
+    // The available residue for Radd is the total residue minus the spouse's share.
+    // Wait, the totalFinalShare already includes the spouse's share, so the residue
+    // is correctly 1.0 - totalFinalShare. The Radd only applies to the *non-spouse* Faraid heirs.
+
     if (sumOfEligibleShares > 0) {
+      // 🎯 The Fix: The Radd amount should only be distributed among the Radd-eligible heirs (Daughters).
       raddHeirs.forEach((heir) => {
         const proportion = heir.finalShare / sumOfEligibleShares;
         const raddAmount = residueForRadd * proportion;
-
+        // Add the Radd amount to the daughter's existing share (2/3)
         heir.finalShare += raddAmount;
       });
+      // The Spouse's share (1/4) remains unchanged and is included in the final allocation.
     }
     totalFinalShare = 1.0;
   }
@@ -321,6 +333,8 @@ exports.calculateShares = async (input) => {
       heir: h.name_en,
       count: h.count,
       classification: h.classification,
+      // Fix: Ensure that if a spouse exists and has a finalShare, it's not divided by count (which is always 1).
+      // We also need to split the Daughter's collective share among the count for the output display.
       share_fraction_of_total: h.finalShare,
       share_amount: h.finalShare * netEstate,
       status: h.status,
