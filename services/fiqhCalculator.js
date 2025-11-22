@@ -126,56 +126,48 @@ exports.calculateShares = async (input) => {
 
   // Basic Estate Calculation
   const netEstate = assets - liabilities;
+  const oneWhole = { num: 1, den: 1 };
+  let reconciliationStatus = "Balanced";
 
-  let heirsWithDetails = [];
-  let allRules = [];
+  // --- DATABASE QUERIES (Outside of try/catch to let errors bubble up) ---
 
-  try {
-    // 1. Retrieve Heir Details (Classification and Default Share)
-    const heirDetailsQuery = `
-            SELECT heir_type_id, name_en, classification, default_share 
-            FROM HeirTypes 
-            WHERE name_en = ANY($1::text[])
-        `;
-    const detailsResult = await pool.query(heirDetailsQuery, [
-      heirs.map((h) => h.name),
-    ]);
-    const detailsMap = new Map(detailsResult.rows.map((d) => [d.name_en, d]));
+  // 1. Retrieve Heir Details (Classification and Default Share)
+  const heirDetailsQuery = `
+          SELECT heir_type_id, name_en, classification, default_share 
+          FROM HeirTypes 
+          WHERE name_en = ANY($1::text[])
+      `;
+  const detailsResult = await pool.query(heirDetailsQuery, [
+    heirs.map((h) => h.name),
+  ]);
+  const detailsMap = new Map(detailsResult.rows.map((d) => [d.name_en, d]));
 
-    // 2. Map frontend heirs with database details
-    heirsWithDetails = heirs.map((h) => ({
-      ...h,
-      // The frontend name (h.name) must match a key in detailsMap (d.name_en).
-      ...detailsMap.get(h.name),
-      isExcluded: false,
-      // Initialize shares as fractions
-      finalShareFraction: { num: 0, den: 1 },
-      status: "PENDING",
-    }));
+  // 2. Map frontend heirs with database details
+  let heirsWithDetails = heirs.map((h) => ({
+    ...h,
+    ...detailsMap.get(h.name),
+    isExcluded: false,
+    finalShareFraction: { num: 0, den: 1 },
+    status: "PENDING",
+  }));
 
-    // 3. Retrieve Fiqh Rules (Exclusion and Reduction)
-    const heirNames = heirs.map((h) => h.name);
-    const ruleQuery = `
-            SELECT 
-                t1.name_en AS primary_heir_name,
-                t2.name_en AS condition_heir_name,
-                r.condition_type,
-                r.reduction_factor
-            FROM FiqhRules r
-            JOIN HeirTypes t1 ON r.heir_type_id = t1.heir_type_id
-            LEFT JOIN HeirTypes t2 ON r.condition_heir_id = t2.heir_type_id
-            WHERE t1.name_en = ANY($1::text[]) OR t2.name_en = ANY($1::text[]);
-        `;
-    const ruleResult = await pool.query(ruleQuery, [heirNames]);
-    allRules = ruleResult.rows;
-  } catch (error) {
-    console.error("Database query for Fiqh Rules failed:", error);
-    throw new Error(
-      "Failed to retrieve inheritance rules from the database. Check database connection and migrations."
-    );
-  }
+  // 3. Retrieve Fiqh Rules (Exclusion and Reduction)
+  const heirNames = heirs.map((h) => h.name);
+  const ruleQuery = `
+          SELECT 
+              t1.name_en AS primary_heir_name,
+              t2.name_en AS condition_heir_name,
+              r.condition_type,
+              r.reduction_factor
+          FROM FiqhRules r
+          JOIN HeirTypes t1 ON r.heir_type_id = t1.heir_type_id
+          LEFT JOIN HeirTypes t2 ON r.condition_heir_id = t2.heir_type_id
+          WHERE t1.name_en = ANY($1::text[]) OR t2.name_en = ANY($1::text[]);
+      `;
+  const ruleResult = await pool.query(ruleQuery, [heirNames]);
+  const allRules = ruleResult.rows;
 
-  // --- START FARA'ID LOGIC IMPLEMENTATION ---
+  // --- END DATABASE QUERIES ---
 
   // 1. Apply Exclusion (Hajb) Rules
   allRules
@@ -198,6 +190,7 @@ exports.calculateShares = async (input) => {
     });
 
   let survivingHeirs = heirsWithDetails.filter((h) => !h.isExcluded);
+  const survivingHeirCount = survivingHeirs.length;
 
   // Determine if any descendant is present
   const descendantIsPresent = survivingHeirs.some(
@@ -258,7 +251,7 @@ exports.calculateShares = async (input) => {
   });
 
   // 6. Apply Fixed Share (As-hab al-Faraid) Rules using Fractions
-  let totalFaraidShareFraction = { num: 0, den: 1 };
+  let totalFixedFaraidShareFraction = { num: 0, den: 1 };
 
   survivingHeirs = survivingHeirs.map((heir) => {
     let updatedHeir = { ...heir };
@@ -295,8 +288,8 @@ exports.calculateShares = async (input) => {
         updatedHeir.finalShareFraction = finalShareFraction;
 
         // Calculate total Faraid share based on the collective share for the group
-        totalFaraidShareFraction = addFractions(
-          totalFaraidShareFraction,
+        totalFixedFaraidShareFraction = addFractions(
+          totalFixedFaraidShareFraction,
           finalShareFraction
         );
 
@@ -314,21 +307,10 @@ exports.calculateShares = async (input) => {
     return updatedHeir;
   });
 
-  // Recalculate total share after fixed Faraid allocation (Step 6)
-  let totalFinalShareFraction = survivingHeirs.reduce(
-    (sumFraction, h) => addFractions(sumFraction, h.finalShareFraction),
-    { num: 0, den: 1 }
-  );
-  let totalFinalShareDecimal = toDecimal(totalFinalShareFraction);
+  let totalFinalShareDecimal = toDecimal(totalFixedFaraidShareFraction);
 
-  const oneWhole = { num: 1, den: 1 };
-  let reconciliationStatus = "Balanced";
-  const hasAsaba = survivingHeirs.some(
-    (h) => h.classification && h.classification.includes("Asaba")
-  );
-
-  // --- START HIGH-PRIORITY SINGLE HEIR CHECK AND EARLY EXIT (Fix for Husband-only) ---
-  if (survivingHeirs.length === 1) {
+  // --- START HIGH-PRIORITY SINGLE HEIR CHECK AND EARLY EXIT (The definitive fix) ---
+  if (survivingHeirCount === 1) {
     const onlyHeir = survivingHeirs[0];
     const isSpouse =
       onlyHeir.name_en === "Husband" || onlyHeir.name_en === "Wife";
@@ -341,17 +323,15 @@ exports.calculateShares = async (input) => {
         totalFinalShareDecimal > 0) ||
       onlyHeir.classification.includes("Asaba")
     ) {
-      // This is the core fix: Force 100% allocation for the single surviving heir.
+      // Force 100% allocation (Radd or Asaba)
       onlyHeir.finalShareFraction = oneWhole;
       onlyHeir.status +=
         " (Radd/Asaba applied: Only heir takes full estate, 1/1)";
       reconciliationStatus = isFaraid
         ? "Radd (Return - Single Heir)"
         : "Balanced (Asaba)";
-      totalFinalShareFraction = oneWhole;
+      totalFixedFaraidShareFraction = oneWhole;
       totalFinalShareDecimal = 1.0;
-    } else {
-      // If the single heir already has 100% or 0%, the current state is the final state.
     }
 
     // Allocation is finalized, return results now.
@@ -370,13 +350,22 @@ exports.calculateShares = async (input) => {
           status: h.status,
         };
       }),
-      notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}. Total Final Fraction: ${totalFinalShareFraction.num}/${totalFinalShareFraction.den}`,
+      notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}. Total Final Fraction: ${totalFixedFaraidShareFraction.num}/${totalFixedFaraidShareFraction.den}`,
     };
   }
   // --- END HIGH-PRIORITY SINGLE HEIR CHECK AND EARLY EXIT ---
 
+  // --- STANDARD MULTI-HEIR LOGIC CONTINUES FROM HERE ---
+
+  const hasAsaba = survivingHeirs.some(
+    (h) => h.classification && h.classification.includes("Asaba")
+  );
+
   // 7. Apply Residue (Asaba) Rules (Multi-heir path)
-  let residueFraction = subtractFractions(oneWhole, totalFinalShareFraction);
+  let residueFraction = subtractFractions(
+    oneWhole,
+    totalFixedFaraidShareFraction
+  );
   let residueDecimal = toDecimal(residueFraction);
 
   if (residueDecimal > 0.0001) {
@@ -441,7 +430,7 @@ exports.calculateShares = async (input) => {
         return updatedHeir;
       });
       // Recalculate totals after Asaba distribution
-      totalFinalShareFraction = oneWhole;
+      totalFixedFaraidShareFraction = oneWhole;
       totalFinalShareDecimal = 1.0;
     }
   }
@@ -449,17 +438,17 @@ exports.calculateShares = async (input) => {
   // 8. Reconciliation (Awl and Radd)
 
   // Recalculate total share after Asaba/Faraid processing
-  totalFinalShareFraction = survivingHeirs.reduce(
+  totalFixedFaraidShareFraction = survivingHeirs.reduce(
     (sumFraction, h) => addFractions(sumFraction, h.finalShareFraction),
     { num: 0, den: 1 }
   );
-  totalFinalShareDecimal = toDecimal(totalFinalShareFraction);
+  totalFinalShareDecimal = toDecimal(totalFixedFaraidShareFraction);
 
   // Awl (Increase): Total Faraid share exceeds 1.0
   if (totalFinalShareDecimal > 1.0001) {
     reconciliationStatus = "Awl (Increase)";
 
-    const awlFactor = totalFinalShareFraction;
+    const awlFactor = totalFixedFaraidShareFraction;
 
     survivingHeirs = survivingHeirs.map((heir) => {
       let updatedHeir = { ...heir };
@@ -474,7 +463,7 @@ exports.calculateShares = async (input) => {
       }
       return updatedHeir;
     });
-    totalFinalShareFraction = oneWhole;
+    totalFixedFaraidShareFraction = oneWhole;
     totalFinalShareDecimal = 1.0;
   }
 
@@ -556,7 +545,7 @@ exports.calculateShares = async (input) => {
         return updatedHeir;
       });
     }
-    totalFinalShareFraction = oneWhole;
+    totalFixedFaraidShareFraction = oneWhole;
     totalFinalShareDecimal = 1.0;
   }
 
@@ -579,6 +568,6 @@ exports.calculateShares = async (input) => {
         status: h.status,
       };
     }),
-    notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}. Total Final Fraction: ${totalFinalShareFraction.num}/${totalFinalShareFraction.den}`,
+    notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}. Total Final Fraction: ${totalFixedFaraidShareFraction.num}/${totalFixedFaraidShareFraction.den}`,
   };
 };
