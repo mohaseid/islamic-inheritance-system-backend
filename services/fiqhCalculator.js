@@ -1,6 +1,6 @@
 const pool = require("../db");
 
-// --- UTILITY FUNCTIONS FOR EXACT FRACTION ARITHMETIC ---
+// --- UTILITY FUNCTIONS FOR EXACT FRACTION ARITHMETIC (No changes here) ---
 
 /**
  * Calculates the Greatest Common Divisor (GCD) of two numbers.
@@ -289,14 +289,15 @@ exports.calculateShares = async (input) => {
     });
 
     if (finalShareFraction.num > 0) {
-      // CRITICAL FIX: Ensure a fresh object is assigned here, not a shared reference,
-      // although 'toFraction' should return a new object every time.
+      // MANDATORY STEP: Set the exact fraction for all Faraid heirs.
       updatedHeir.finalShareFraction = finalShareFraction;
-      // Total Faraid share is calculated based on the COLLECTIVE share for the group
+
+      // Calculate total Faraid share based on the collective share for the group
       totalFaraidShareFraction = addFractions(
         totalFaraidShareFraction,
         updatedHeir.finalShareFraction
       );
+
       updatedHeir.status = updatedHeir.status.startsWith("FARAD")
         ? updatedHeir.status
         : `FARAD: Allocated ${toDecimal(finalShareFraction).toFixed(4)} (${
@@ -305,6 +306,14 @@ exports.calculateShares = async (input) => {
     }
     return updatedHeir;
   });
+
+  // LOGGING: Check Husband's share before Reconciliation
+  const husband = survivingHeirs.find((h) => h.name_en === "Husband");
+  if (husband) {
+    console.log(
+      `[DEBUG] Husband's share before Radd/Awl: ${husband.finalShareFraction.num}/${husband.finalShareFraction.den}`
+    );
+  }
 
   // 7. Apply Residue (Asaba) Rules
   const oneWhole = { num: 1, den: 1 };
@@ -419,7 +428,8 @@ exports.calculateShares = async (input) => {
     const spouseHeirs = survivingHeirs.filter(
       (h) => h.name_en === "Husband" || h.name_en === "Wife"
     );
-    // The fixed, unchangeable share of the spouse(s)
+
+    // Use the *current* fixed share of the spouse(s) for the pool calculation.
     const spouseShareSumFraction = spouseHeirs.reduce(
       (sum, h) => addFractions(sum, h.finalShareFraction),
       { num: 0, den: 1 }
@@ -444,6 +454,11 @@ exports.calculateShares = async (input) => {
     const sumOfEligibleSharesFraction = raddHeirs.reduce(
       (sum, h) => addFractions(sum, h.finalShareFraction),
       { num: 0, den: 1 }
+    );
+
+    // LOGGING: Check Radd Calculation values
+    console.log(
+      `[DEBUG] Radd Init: Spouse Share Sum: ${spouseShareSumFraction.num}/${spouseShareSumFraction.den}. Radd Pool: ${raddPoolFraction.num}/${raddPoolFraction.den}. Eligible Sum: ${sumOfEligibleSharesFraction.num}/${sumOfEligibleSharesFraction.den}`
     );
 
     if (sumOfEligibleSharesFraction.num > 0) {
@@ -475,6 +490,7 @@ exports.calculateShares = async (input) => {
           updatedHeir.status += ` (Radd applied: New share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
         } else if (spouseHeirs.some((s) => s.name_en === updatedHeir.name_en)) {
           // Spouse's share is maintained (already preserved via deep clone)
+          // This line is for clarity and debugging, ensuring the value is what we expect.
           updatedHeir.status += ` (Spouse: Share maintained at ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
         }
         // If the heir is not eligible for Radd or a spouse, the initial deep-cloned fraction is returned as is.
