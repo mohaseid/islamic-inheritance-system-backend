@@ -263,9 +263,19 @@ exports.calculateShares = async (input) => {
   if (totalFinalShare < 0.9999 && !hasAsaba) {
     reconciliationStatus = "Radd (Return)";
 
+    // Spouses must be excluded from receiving Radd
+    const spouseHeirs = survivingHeirs.filter(
+      (h) => h.name_en === "Husband" || h.name_en === "Wife"
+    );
+    const spouseShareSum = spouseHeirs.reduce(
+      (sum, h) => sum + h.finalShare,
+      0
+    );
+
+    // The residue available for distribution among Radd-eligible heirs (e.g., Daughters)
     const residueForRadd = 1.0 - totalFinalShare;
 
-    // Exclude all spouses from Radd eligibility.
+    // Radd-eligible heirs (non-spouse Faraid heirs with a share)
     const raddHeirs = survivingHeirs.filter(
       (h) =>
         h.classification === "As-hab al-Faraid" &&
@@ -290,10 +300,18 @@ exports.calculateShares = async (input) => {
         );
 
         if (isRaddEligible) {
+          // The proportion based on their initial share
           const proportion = updatedHeir.finalShare / sumOfEligibleShares;
-          const raddAmount = residueForRadd * proportion;
+
           // Add the Radd amount to the heir's existing share
-          updatedHeir.finalShare += raddAmount;
+          updatedHeir.finalShare += residueForRadd * proportion;
+          updatedHeir.status += ` (Radd applied: +${(
+            residueForRadd * proportion
+          ).toFixed(4)})`;
+        } else if (spouseHeirs.some((s) => s.name_en === updatedHeir.name_en)) {
+          // Spouse's share is maintained and explicitly excluded from Radd calculation
+          updatedHeir.status +=
+            " (Spouse: Share maintained, excluded from Radd)";
         }
         return updatedHeir;
       });
@@ -307,25 +325,13 @@ exports.calculateShares = async (input) => {
     totalFractionAllocated: totalFinalShare,
     reconciliation: reconciliationStatus,
     shares: survivingHeirs.map((h) => {
-      // For groups like 3 Daughters, their h.finalShare is the COLLECTIVE share (3/4).
-      // We need to divide this collective share by the count only if the group has multiple people.
-      let sharePerPerson = h.finalShare;
-
-      // We must only divide if the heir is NOT the spouse AND the count is > 1.
-      if (
-        h.count > 1 &&
-        !h.name_en.includes("Husband") &&
-        !h.name_en.includes("Wife")
-      ) {
-        // This splits the collective share (e.g., 3/4) among the 3 daughters
-        sharePerPerson = h.finalShare / h.count;
-      }
+      // The finalShare is the COLLECTIVE share for the group (e.g., 3/4 for all Daughters).
 
       return {
         heir: h.name_en,
         count: h.count,
         classification: h.classification,
-        // The share fraction displayed should be the total fraction of the net estate for the GROUP (Daughters or Husband)
+        // Share fraction of total is the group's total claim on the estate
         share_fraction_of_total: h.finalShare,
         share_amount: h.finalShare * netEstate,
         status: h.status,
