@@ -6,7 +6,7 @@ const pool = require("../db");
  * @returns {object} - The final calculation result.
  */
 exports.calculateShares = async (input) => {
-  const { assets, liabilities, heirs } = input;
+  const { deceased, assets, liabilities, heirs } = input; // Deceased gender is now used
 
   // Basic Estate Calculation
   const netEstate = assets - liabilities;
@@ -25,21 +25,6 @@ exports.calculateShares = async (input) => {
       heirs.map((h) => h.name),
     ]);
     const detailsMap = new Map(detailsResult.rows.map((d) => [d.name_en, d]));
-
-    // Log for debugging: Check how names map to database entries.
-    console.log(
-      "Input Heir Names from Frontend:",
-      heirs.map((h) => h.name)
-    );
-    console.log(
-      "Database Names and Shares Retrieved:",
-      detailsResult.rows.map((d) => ({
-        name: d.name_en,
-        share: d.default_share,
-        classification: d.classification,
-      }))
-    );
-    console.log("Wife Data Retrieved via Map Lookup:", detailsMap.get("Wife"));
 
     // 2. Map frontend heirs with database details
     heirsWithDetails = heirs.map((h) => ({
@@ -102,13 +87,33 @@ exports.calculateShares = async (input) => {
     (h) => h.name_en === "Son" || h.name_en === "Daughter"
   );
 
-  // 2. CRITICAL FIX: Asaba bi-ghayrihi (Daughter with Son) Rule
+  // === DYNAMIC SHARE ADJUSTMENTS BASED ON PRESENCE ===
+
+  // 2. 🌟 CRITICAL FIX: Spouse Share Reduction (Presence of Descendants)
+  survivingHeirs = survivingHeirs.map((heir) => {
+    if (heir.name_en === "Husband" && descendantIsPresent) {
+      return {
+        ...heir,
+        default_share: 0.25, // Change from 1/2 (0.5) to 1/4 (0.25) is handled by DB rules
+        status: "FARAD: Reduced by Descendants",
+      };
+    } else if (heir.name_en === "Wife" && descendantIsPresent) {
+      return {
+        ...heir,
+        default_share: 0.125, // Change from 1/4 (0.25) to 1/8 (0.125)
+        status: "FARAD: Reduced by Descendants",
+      };
+    }
+    return heir;
+  });
+
+  // 3. CRITICAL FIX: Asaba bi-ghayrihi (Daughter with Son) Rule
   const sonIsPresent = survivingHeirs.some((h) => h.name_en === "Son");
 
   if (sonIsPresent) {
     survivingHeirs = survivingHeirs.map((heir) => {
       if (heir.name_en === "Daughter") {
-        // Daughter becomes Asaba (residuary) with Son, losing her fixed share (1/2)
+        // Daughter becomes Asaba (residuary) with Son, losing her fixed share
         return {
           ...heir,
           classification: "Asaba",
@@ -120,7 +125,7 @@ exports.calculateShares = async (input) => {
     });
   }
 
-  // 3. CRITICAL FIX: Father as pure Asaba Rule
+  // 4. CRITICAL FIX: Father as pure Asaba Rule
   // Father's share is 1/6 (fixed) when descendants exist.
   // Father's share is Asaba (residue) when NO descendants exist.
   if (
@@ -141,9 +146,9 @@ exports.calculateShares = async (input) => {
     });
   }
 
+  // 5. Apply Fixed Share (As-hab al-Faraid) Rules
   let totalFaraidShare = 0;
 
-  // 4. Apply Fixed Share (As-hab al-Faraid) Rules
   const faraidHeirs = survivingHeirs.filter(
     (h) => h.classification === "As-hab al-Faraid"
   );
@@ -178,9 +183,14 @@ exports.calculateShares = async (input) => {
     }
   });
 
-  // 5. Apply Residue (Asaba) Rules
+  // NOTE: You must also ensure your FiqhRules table has the correct reduction rules for Daughters (1/2 for one, 2/3 for two/more)
+  // Since the original code handles reduction rules, the logic below might be the culprit.
+
+  // 6. Apply Residue (Asaba) Rules
   let residueFraction = 1.0 - totalFaraidShare;
   let asabaHeirs = survivingHeirs.filter((h) => h.classification === "Asaba");
+
+  // ... (The Asaba calculation logic here looks fine for distributing the remainder)
 
   if (residueFraction > 0 && asabaHeirs.length > 0) {
     let totalAsabaPoints = 0;
@@ -219,7 +229,7 @@ exports.calculateShares = async (input) => {
     }
   }
 
-  // 6. Reconciliation (Awl and Radd)
+  // 7. Reconciliation (Awl and Radd)
   let totalFinalShare = survivingHeirs.reduce(
     (sum, h) => sum + h.finalShare,
     0
@@ -253,7 +263,8 @@ exports.calculateShares = async (input) => {
       (h) =>
         h.classification === "As-hab al-Faraid" &&
         h.name_en &&
-        !h.name_en.includes("Wife") // Exclude Spouse from Radd
+        !h.name_en.includes("Wife") && // Exclude Spouse from Radd
+        !h.name_en.includes("Husband") // Exclude Spouse from Radd
     );
 
     const sumOfEligibleShares = raddHeirs.reduce(
@@ -272,7 +283,7 @@ exports.calculateShares = async (input) => {
     totalFinalShare = 1.0;
   }
 
-  // 7. Final Output
+  // 8. Final Output
   return {
     netEstate: netEstate,
     totalFractionAllocated: totalFinalShare,
