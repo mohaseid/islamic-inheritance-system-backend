@@ -24,7 +24,6 @@ exports.calculateShares = async (input) => {
     ]);
     const detailsMap = new Map(detailsResult.rows.map((d) => [d.name_en, d]));
 
-    // 🚀 VITAL DEBUG LOGS TO IDENTIFY DATA MAPPING ISSUES (CHECK RENDER LOGS FOR OUTPUT!)
     console.log(
       "Input Heir Names from Frontend:",
       heirs.map((h) => h.name)
@@ -37,16 +36,15 @@ exports.calculateShares = async (input) => {
         classification: d.classification,
       }))
     );
-    // FIX APPLIED HERE: Using "Wife" since that's the name now in the database.
+
     console.log(
       "Spouse Data Retrieved via Map Lookup:",
       detailsMap.get("Wife")
     );
-    // ---------------------------------------------------------------------------------
 
     heirsWithDetails = heirs.map((h) => ({
       ...h,
-      // The frontend name (h.name) must match a key in detailsMap (d.name_en).
+
       ...detailsMap.get(h.name),
       isExcluded: false,
       finalShare: 0,
@@ -93,6 +91,23 @@ exports.calculateShares = async (input) => {
     });
 
   let survivingHeirs = heirsWithDetails.filter((h) => !h.isExcluded);
+
+  const sonIsPresent = survivingHeirs.some((h) => h.name_en === "Son");
+
+  if (sonIsPresent) {
+    survivingHeirs = survivingHeirs.map((heir) => {
+      if (heir.name_en === "Daughter") {
+        return {
+          ...heir,
+          classification: "Asaba",
+          default_share: null,
+          status: "ASABA (with Son)",
+        };
+      }
+      return heir;
+    });
+  }
+
   let totalFaraidShare = 0;
 
   const faraidHeirs = survivingHeirs.filter(
@@ -100,7 +115,6 @@ exports.calculateShares = async (input) => {
   );
 
   faraidHeirs.forEach((heir) => {
-    // This should now be a non-zero value retrieved from the database
     let finalShare = heir.default_share;
 
     const reductionRules = allRules.filter(
@@ -156,7 +170,9 @@ exports.calculateShares = async (input) => {
         if (heir.points > 0) {
           const asabaShare = residueFraction * (heir.points / totalAsabaPoints);
           heir.finalShare += asabaShare;
-          heir.status = `ASABA: Allocated Residue of ${asabaShare.toFixed(4)}`;
+          heir.status = heir.status.includes("ASABA")
+            ? heir.status + ` (Allocated Residue of ${asabaShare.toFixed(4)})`
+            : `ASABA: Allocated Residue of ${asabaShare.toFixed(4)}`;
           heir.classification = "Asaba (Residue)";
         }
       });
@@ -194,7 +210,7 @@ exports.calculateShares = async (input) => {
       (h) =>
         h.classification === "As-hab al-Faraid" &&
         h.name_en &&
-        !h.name_en.includes("Spouse")
+        !h.name_en.includes("Wife") // Exclude spouse from Radd using the database name
     );
 
     const sumOfEligibleShares = raddHeirs.reduce(
