@@ -19,11 +19,12 @@ app.use(express.json());
 
 const swaggerSpec = YAML.load("./openapi.yaml");
 
+swaggerSpec.servers[0].url = `http://localhost:${PORT}/api/`;
 swaggerSpec.servers[0].url = `https://islamic-inheritance-system-backend-1.onrender.com/api`;
 
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 console.log(
-  `Swagger documentation available at https://islamic-inheritance-system-backend-1.onrender.com/api-docs/`
+  `Swagger documentation available at https://islamic-inheritance-system-backend-1.onrender.com/api-docs`
 );
 
 app.post("/api/calculate-shares", calculateController.calculateShares);
