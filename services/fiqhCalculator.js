@@ -154,8 +154,13 @@ exports.calculateShares = async (input) => {
     console.log("Standardized Heir Names sent to DB:", heirNames);
 
     // 1. Retrieve Heir Details (Classification and Default Share)
+    // IMPORTANT: Casting default_share to FLOAT to ensure the value is a number in JS
     const heirDetailsQuery = `
-            SELECT heir_type_id, name_en, classification, default_share 
+            SELECT 
+                heir_type_id, 
+                name_en, 
+                classification, 
+                CAST(default_share AS FLOAT) AS default_share
             FROM HeirTypes 
             WHERE name_en = ANY($1::text[])
         `;
@@ -186,6 +191,13 @@ exports.calculateShares = async (input) => {
 
       // **CRITICAL CHECK 2 (Failsafe)**: Throw a precise error if details are missing or malformed.
       if (!details || !details.classification) {
+        // If details is null, the name didn't match anything.
+        if (!details) {
+          throw new Error(
+            `Critical Data Error: Database entry for '${standardizedName}' was not found in 'HeirTypes'.`
+          );
+        }
+        // If classification is missing
         throw new Error(
           `Critical Data Error: Database entry for '${standardizedName}' is missing or incomplete. Specifically, the 'classification' field is missing. Please verify the entry in the 'HeirTypes' table.`
         );
@@ -207,7 +219,7 @@ exports.calculateShares = async (input) => {
                 t1.name_en AS primary_heir_name,
                 t2.name_en AS condition_heir_name,
                 r.condition_type,
-                r.reduction_factor
+                CAST(r.reduction_factor AS FLOAT) AS reduction_factor
             FROM FiqhRules r
             JOIN HeirTypes t1 ON r.heir_type_id = t1.heir_type_id
             LEFT JOIN HeirTypes t2 ON r.condition_heir_id = t2.heir_type_id
@@ -223,7 +235,7 @@ exports.calculateShares = async (input) => {
     );
     // Re-throw the error as a standard message for the frontend
     throw new Error(
-      `Failed to initialize calculation (Database Step 1-3 error): ${error.message}`
+      `Failed to initialize calculation (Database Step 1-3 error). Please check server logs for details. Error reported: ${error.message}`
     );
   }
   // --- END DATABASE QUERIES ---
