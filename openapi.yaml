@@ -1,0 +1,112 @@
+openapi: 3.0.0
+info:
+  title: Islamic Inheritance System API (Mirath Navigator)
+  version: 1.0.0
+  description: The backend engine for calculating Fiqh al-Mawarīth (Islamic Inheritance) shares based on assets, liabilities, and surviving heirs.
+servers:
+  - url: /api/v1
+    description: Primary API endpoint prefix
+
+tags:
+  - name: Calculation
+    description: Core inheritance share calculation operations
+
+paths:
+  /calculate-shares:
+    post:
+      tags:
+        - Calculation
+      summary: Calculates the final inheritance shares for all surviving heirs.
+      description: This endpoint applies Fiqh rules (fixed shares, residue, exclusion, Awl, and Radd) to determine the fractional and monetary share for each heir from the net estate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assets:
+                  type: number
+                  format: float
+                  example: 1000000
+                  description: The total value of the deceased's assets.
+                liabilities:
+                  type: number
+                  format: float
+                  example: 100000
+                  description: The total value of the deceased's liabilities (including debts, funeral costs, and bequests).
+                heirs:
+                  type: array
+                  description: List of surviving heirs and their count.
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        example: Wife
+                        description: The Fiqh classification name of the heir (e.g., Son, Daughter, Wife, Father).
+                      count:
+                        type: integer
+                        example: 1
+                        description: The number of individuals of this heir type.
+              required:
+                - assets
+                - liabilities
+                - heirs
+      responses:
+        "200":
+          description: Successful calculation of inheritance shares.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  netEstate:
+                    type: number
+                    example: 900000
+                    description: Total assets minus total liabilities.
+                  totalFractionAllocated:
+                    type: number
+                    example: 1.0
+                    description: The sum of all allocated shares (should be 1.0 after reconciliation).
+                  reconciliation:
+                    type: string
+                    example: Balanced
+                    description: Indicates if the process involved Awl (Increase), Radd (Return), or was Balanced.
+                  shares:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        heir:
+                          type: string
+                          example: Daughter
+                        count:
+                          type: integer
+                          example: 1
+                        classification:
+                          type: string
+                          example: Asaba (Residue)
+                          description: The final Fiqh category used for distribution (e.g., As-hab al-Faraid, Asaba).
+                        share_fraction_of_total:
+                          type: number
+                          example: 0.291667
+                          description: The final share as a fraction of the net estate.
+                        share_amount:
+                          type: number
+                          example: 262500.0
+                          description: The monetary value of the share.
+                        status:
+                          type: string
+                          example: ASABA (with Son) (Allocated Residue of 0.2917)
+                          description: A detailed note on how the share was determined (e.g., excluded, reduced, took residue).
+        "400":
+          description: Invalid input or failure to connect to database.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Failed to calculate shares. Please check input.

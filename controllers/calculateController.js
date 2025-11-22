@@ -2,15 +2,13 @@ const fiqhCalculator = require("../services/fiqhCalculator");
 
 /**
  * @swagger
- * tags:
- * name: Calculation
- * description: Core inheritance share calculation operations
+ * paths:
  * /api/calculate:
  * post:
  * tags:
  * - Calculation
  * summary: Calculates the final Islamic inheritance shares.
- * description: Takes estate details and a list of surviving heirs, and returns the calculated fractional and monetary shares.
+ * description: Takes estate details and a list of surviving heirs, and returns the calculated fractional and monetary shares based on Fiqh al-Mawārīth.
  * requestBody:
  * required: true
  * content:
@@ -43,7 +41,7 @@ const fiqhCalculator = require("../services/fiqhCalculator");
  * properties:
  * name:
  * type: string
- * example: Spouse (Wife)
+ * example: Wife
  * description: The Fiqh classification name of the heir (e.g., Son, Daughter, Wife, Father).
  * count:
  * type: integer
