@@ -3,7 +3,7 @@ const fiqhCalculator = require("../services/fiqhCalculator");
 /**
  * @swagger
  * paths:
- * /api/calculate:
+ * /api/v1/calculate-shares:
  * post:
  * tags:
  * - Calculation
