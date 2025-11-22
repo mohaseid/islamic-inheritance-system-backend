@@ -1,247 +1,319 @@
+const pool = require("../db");
+
 /**
- * @fileoverview Core service for calculating Islamic inheritance shares (Fara'id).
- * This service implements the logic for determining fixed shares (Fard), reduction (Hajib), and the return (Radd).
- * * * * NOTE: Currently supports:
- * 1. Sole Spouse (Husband or Wife) (Fard + Radd = 100%).
- * 2. Spouse + one single Residuary Heir (Asaba), assuming no descendants (Fard + Ta'sib).
- * 3. Spouse + Descendants (Sons/Daughters) (Fard Reduction + Ta'sib for Children).
+ * Main function to calculate inheritance shares according to Fiqh principles.
+ * @param {object} input - Contains deceased, assets, liabilities, and heirs list.
+ * @returns {object} - The final calculation result.
  */
+exports.calculateShares = async (input) => {
+  const { deceased, assets, liabilities, heirs } = input; // Deceased gender is now used
 
-// --- Fiqh Constants and Definitions ---
-const SHARES = {
-  // Spouse shares
-  WIFE_NO_DESCENDANTS: 1 / 4, // 0.25
-  HUSBAND_NO_DESCENDANTS: 1 / 2, // 0.5
-  WIFE_WITH_DESCENDANTS: 1 / 8, // 0.125
-  HUSBAND_WITH_DESCENDANTS: 1 / 4, // 0.25
-};
+  // Basic Estate Calculation
+  const netEstate = assets - liabilities;
 
-// Heirs who are typically Asaba bi-nafsihi (Residuary Heirs)
-const PRIMARY_ASABA = ["father", "son", "full_brother", "paternal_uncle"];
+  let heirsWithDetails = [];
+  let allRules = [];
 
-// --- Helper Functions ---
+  try {
+    // 1. Retrieve Heir Details (Classification and Default Share)
+    const heirDetailsQuery = `
+            SELECT heir_type_id, name_en, classification, default_share 
+            FROM HeirTypes 
+            WHERE name_en = ANY($1::text[])
+        `;
+    const detailsResult = await pool.query(heirDetailsQuery, [
+      heirs.map((h) => h.name),
+    ]);
+    const detailsMap = new Map(detailsResult.rows.map((d) => [d.name_en, d]));
 
-/** Checks for the presence of a son or daughter. */
-const hasDescendantsFunc = (heirs) =>
-  heirs.some((h) => (h.name === "son" || h.name === "daughter") && h.count > 0);
-
-/** Finds the single, nearest Asaba (Residuary Heir) if present. (Simplified) */
-const findNearestAsaba = (heirs) => {
-  for (const type of PRIMARY_ASABA) {
-    const heir = heirs.find((h) => h.name === type && h.count === 1);
-    if (heir) return heir;
-  }
-  return null;
-};
-
-// --- Core Calculation Function ---
-
-const calculateShares = async ({ assets, liabilities, heirs }) => {
-  // 1. Calculate Net Estate Value
-  const netEstateValue = assets - liabilities;
-  if (netEstateValue < 0) {
-    throw new Error(
-      `The estate is insolvent. Liabilities ($${liabilities}) exceed assets ($${assets}). No inheritance is distributed.`
+    // Log for debugging: Check how names map to database entries.
+    console.log(
+      "Input Heir Names from Frontend:",
+      heirs.map((h) => h.name)
     );
-  }
+    console.log(
+      "Database Names and Shares Retrieved:",
+      detailsResult.rows.map((d) => ({
+        name: d.name_en,
+        share: d.default_share,
+        classification: d.classification,
+      }))
+    );
+    console.log("Wife Data Retrieved via Map Lookup:", detailsMap.get("Wife"));
 
-  // Filter and standardize heirs
-  const survivingHeirs = heirs
-    .filter((h) => h.count > 0)
-    .map((h) => ({
+    // 2. Map frontend heirs with database details
+    heirsWithDetails = heirs.map((h) => ({
       ...h,
-      name: h.name.toLowerCase(),
-      count: parseInt(h.count, 10),
+      // The frontend name (h.name) must match a key in detailsMap (d.name_en).
+      ...detailsMap.get(h.name),
+      isExcluded: false,
+      finalShare: 0,
+      status: "PENDING",
     }));
 
-  const numHeirs = survivingHeirs.length;
-
-  const result = {
-    netEstateValue,
-    reconciliationStatus: "Pending",
-    totalFractionAllocated: 0,
-    allocatedShares: [],
-    residueFraction: 0,
-  };
-
-  let totalFractionAllocated = 0;
-
-  const spouseHeir = survivingHeirs.find(
-    (h) => h.name === "wife" || h.name === "husband"
-  );
-  const hasDescendants = hasDescendantsFunc(survivingHeirs);
-  const descendantHeirs = survivingHeirs.filter(
-    (h) => h.name === "son" || h.name === "daughter"
-  );
-
-  // --- CASE 1: Sole Spouse (Fard + Radd) ---
-  if (numHeirs === 1 && spouseHeir && spouseHeir.count === 1) {
-    // (Logic as confirmed working in previous steps)
-    const soleSpouse = spouseHeir;
-    const fixedShareText = soleSpouse.name === "wife" ? "1/4" : "1/2";
-    const totalFraction = 1.0;
-
-    result.allocatedShares.push({
-      heir: `${
-        soleSpouse.name.charAt(0).toUpperCase() + soleSpouse.name.slice(1)
-      } (${soleSpouse.count})`,
-      classification: "Spouse (Fard) + Radd",
-      shareFraction: totalFraction,
-      shareAmount: totalFraction * netEstateValue,
-      notes: `Inherits the initial fixed share of ${fixedShareText} plus the remainder (residue) via Radd (Return) because no other eligible heirs exist.`,
-    });
-
-    result.reconciliationStatus = "Radd (Return) - 100%";
-    result.totalFractionAllocated = totalFraction;
-    return result;
-  }
-
-  // --- CASE 3: Spouse + Descendants (Fixed Share Reduction + Ta'sib) ---
-  if (spouseHeir && hasDescendants) {
-    // 3a. Determine Spouse's Reduced Fixed Share (Hajib)
-    let spouseFraction = 0;
-    let spouseFixedShareText = "";
-
-    if (spouseHeir.name === "husband") {
-      spouseFraction = SHARES.HUSBAND_WITH_DESCENDANTS; // 1/4
-      spouseFixedShareText = "1/4";
-    } else if (spouseHeir.name === "wife") {
-      spouseFraction = SHARES.WIFE_WITH_DESCENDANTS; // 1/8
-      spouseFixedShareText = "1/8";
-    }
-
-    // Add Spouse share
-    const spouseShareAmount = spouseFraction * netEstateValue;
-    totalFractionAllocated += spouseFraction;
-
-    result.allocatedShares.push({
-      heir: `${
-        spouseHeir.name.charAt(0).toUpperCase() + spouseHeir.name.slice(1)
-      } (${spouseHeir.count})`,
-      classification: "Spouse (As-hab al-Furud)",
-      shareFraction: spouseFraction,
-      shareAmount: spouseShareAmount,
-      notes: `Fixed share reduced to ${spouseFixedShareText} due to the presence of descendants (Hajib).`,
-    });
-
-    // 3b. Residue (Ta'sib) to Descendants (2:1 ratio)
-    const remainingFraction = 1.0 - totalFractionAllocated;
-
-    if (remainingFraction > 0) {
-      const numSons = survivingHeirs.find((h) => h.name === "son")?.count || 0;
-      const numDaughters =
-        survivingHeirs.find((h) => h.name === "daughter")?.count || 0;
-
-      // Calculate total parts (Sons * 2 + Daughters * 1)
-      const totalTaSibParts = numSons * 2 + numDaughters * 1;
-
-      if (totalTaSibParts > 0) {
-        const fractionPerPart = remainingFraction / totalTaSibParts;
-
-        // Allocate Son's Shares
-        if (numSons > 0) {
-          const sonFraction = fractionPerPart * 2;
-          result.allocatedShares.push({
-            heir: `Son${numSons > 1 ? "s" : ""} (${numSons})`,
-            classification: "Asaba bi-Ghairihi (Residue)",
-            shareFraction: sonFraction * numSons, // Total fraction for all sons
-            shareAmount: sonFraction * numSons * netEstateValue,
-            notes: `Residue allocated with 2:1 ratio (Sons get 2 parts each). Individual share: ${sonFraction.toFixed(
-              4
-            )}`,
-          });
-        }
-
-        // Allocate Daughter's Shares
-        if (numDaughters > 0) {
-          const daughterFraction = fractionPerPart * 1;
-          result.allocatedShares.push({
-            heir: `Daughter${numDaughters > 1 ? "s" : ""} (${numDaughters})`,
-            classification: "Asaba bi-Ghairihi (Residue)",
-            shareFraction: daughterFraction * numDaughters, // Total fraction for all daughters
-            shareAmount: daughterFraction * numDaughters * netEstateValue,
-            notes: `Residue allocated with 2:1 ratio (Daughters get 1 part each). Individual share: ${daughterFraction.toFixed(
-              4
-            )}`,
-          });
-        }
-
-        totalFractionAllocated = 1.0; // The entire remaining fraction is allocated
-      }
-    }
-
-    result.reconciliationStatus = "Complete (Fard + Ta'sib)";
-    result.totalFractionAllocated = totalFractionAllocated;
-    return result;
-  }
-
-  // --- CASE 2: Spouse + Single Residuary Heir (Fard + Ta'sib) ---
-  const asabaHeir = findNearestAsaba(survivingHeirs);
-
-  // Check for the combination of exactly two distinct heirs: a spouse and one single Asaba, AND no descendants.
-  const isSpousePlusSingleAsaba =
-    numHeirs === 2 &&
-    spouseHeir &&
-    asabaHeir &&
-    asabaHeir.name !== spouseHeir.name && // Ensure they are different types
-    asabaHeir.count === 1 &&
-    !hasDescendants;
-
-  if (isSpousePlusSingleAsaba) {
-    // 2a. Determine Spouse's Fixed Share (Fard)
-    const spouseFraction =
-      spouseHeir.name === "wife"
-        ? SHARES.WIFE_NO_DESCENDANTS
-        : SHARES.HUSBAND_NO_DESCENDANTS;
-    const spouseShareAmount = spouseFraction * netEstateValue;
-    totalFractionAllocated += spouseFraction;
-
-    const spouseFixedShareText = spouseHeir.name === "wife" ? "1/4" : "1/2";
-
-    result.allocatedShares.push({
-      heir: `${
-        spouseHeir.name.charAt(0).toUpperCase() + spouseHeir.name.slice(1)
-      } (${spouseHeir.count})`,
-      classification: "Spouse (As-hab al-Furud)",
-      shareFraction: spouseFraction,
-      shareAmount: spouseShareAmount,
-      notes: `Fixed share of ${spouseFixedShareText} due to the absence of descendants.`,
-    });
-
-    // 2b. Residue (Ta'sib) to the Asaba Heir
-    const remainingFraction = 1.0 - totalFractionAllocated;
-    const residueShareAmount = remainingFraction * netEstateValue;
-
-    result.allocatedShares.push({
-      heir: `${
-        asabaHeir.name.charAt(0).toUpperCase() + asabaHeir.name.slice(1)
-      } (${asabaHeir.count})`,
-      classification: "Asaba bi-nafsihi (Residue)",
-      shareFraction: remainingFraction,
-      shareAmount: residueShareAmount,
-      notes: `Inherits the remaining residue (Ta'sib) as the nearest male residuary heir.`,
-    });
-
-    totalFractionAllocated = 1.0; // The entire remaining fraction is allocated
-    result.reconciliationStatus = "Complete (Fard + Ta'sib)";
-    result.totalFractionAllocated = totalFractionAllocated;
-    return result;
-  }
-
-  // --- CASE 4: Unimplemented Combinations ---
-  if (numHeirs > 0) {
+    // 3. Retrieve Fiqh Rules (Exclusion and Reduction)
+    const heirNames = heirs.map((h) => h.name);
+    const ruleQuery = `
+            SELECT 
+                t1.name_en AS primary_heir_name,
+                t2.name_en AS condition_heir_name,
+                r.condition_type,
+                r.reduction_factor
+            FROM FiqhRules r
+            JOIN HeirTypes t1 ON r.heir_type_id = t1.heir_type_id
+            LEFT JOIN HeirTypes t2 ON r.condition_heir_id = t2.heir_type_id
+            WHERE t1.name_en = ANY($1::text[]) OR t2.name_en = ANY($1::text[]);
+        `;
+    const ruleResult = await pool.query(ruleQuery, [heirNames]);
+    allRules = ruleResult.rows;
+  } catch (error) {
+    console.error("Database query for Fiqh Rules failed:", error);
     throw new Error(
-      `Calculation logic for this specific combination (Heirs: ${survivingHeirs
-        .map((h) => `${h.count} ${h.name}`)
-        .join(
-          ", "
-        )}) is not yet fully implemented. Supported cases: Sole Spouse, Spouse + Single Asaba, or Spouse + Descendants.`
+      "Failed to retrieve inheritance rules from the database. Check database connection and migrations."
     );
-  } else {
-    throw new Error("No surviving heirs provided for calculation.");
   }
-};
 
-module.exports = {
-  calculateShares,
+  // --- START FARA'ID LOGIC IMPLEMENTATION ---
+
+  // 1. Apply Exclusion (Hajb) Rules
+  allRules
+    .filter((r) => r.condition_type === "Exclusion")
+    .forEach((rule) => {
+      const isConditionPresent = heirsWithDetails.some(
+        (h) => h.name_en === rule.condition_heir_name && h.count > 0
+      );
+
+      if (isConditionPresent) {
+        const excludedIndex = heirsWithDetails.findIndex(
+          (h) => h.name_en === rule.primary_heir_name
+        );
+        if (excludedIndex !== -1) {
+          heirsWithDetails[excludedIndex].isExcluded = true;
+          heirsWithDetails[excludedIndex].status =
+            "EXCLUDED by " + rule.condition_heir_name;
+        }
+      }
+    });
+
+  let survivingHeirs = heirsWithDetails.filter((h) => !h.isExcluded);
+
+  const descendantIsPresent = survivingHeirs.some(
+    (h) => h.name_en === "Son" || h.name_en === "Daughter"
+  );
+
+  survivingHeirs = survivingHeirs.map((heir) => {
+    if (heir.name_en === "Husband" && descendantIsPresent) {
+      return {
+        ...heir,
+        default_share: 0.25, // Change from 1/2 (0.5) to 1/4 (0.25) is handled by DB rules
+        status: "FARAD: Reduced by Descendants",
+      };
+    } else if (heir.name_en === "Wife" && descendantIsPresent) {
+      return {
+        ...heir,
+        default_share: 0.125, // Change from 1/4 (0.25) to 1/8 (0.125)
+        status: "FARAD: Reduced by Descendants",
+      };
+    }
+    return heir;
+  });
+
+  // 3. CRITICAL FIX: Asaba bi-ghayrihi (Daughter with Son) Rule
+  const sonIsPresent = survivingHeirs.some((h) => h.name_en === "Son");
+
+  if (sonIsPresent) {
+    survivingHeirs = survivingHeirs.map((heir) => {
+      if (heir.name_en === "Daughter") {
+        // Daughter becomes Asaba (residuary) with Son, losing her fixed share (1/2)
+        // Daughter becomes Asaba (residuary) with Son, losing her fixed share
+        return {
+          ...heir,
+          classification: "Asaba",
+          default_share: null, // Critical: Remove fixed share
+          status: "ASABA (with Son)",
+        };
+      }
+      return heir;
+    });
+  }
+
+  // 3. CRITICAL FIX: Father as pure Asaba Rule
+  // 4. CRITICAL FIX: Father as pure Asaba Rule
+  // Father's share is 1/6 (fixed) when descendants exist.
+  // Father's share is Asaba (residue) when NO descendants exist.
+  if (
+    survivingHeirs.some((h) => h.name_en === "Father") &&
+    !descendantIsPresent
+  ) {
+    survivingHeirs = survivingHeirs.map((heir) => {
+      if (heir.name_en === "Father") {
+        // Father takes the residue if no descendants are present
+        return {
+          ...heir,
+          classification: "Asaba",
+          default_share: null, // Critical: Father enters Asaba calculation
+          status: "ASABA (No Descendants)",
+        };
+      }
+      return heir;
+    });
+  }
+
+  // 5. Apply Fixed Share (As-hab al-Faraid) Rules
+  let totalFaraidShare = 0;
+
+  // 4. Apply Fixed Share (As-hab al-Faraid) Rules
+  const faraidHeirs = survivingHeirs.filter(
+    (h) => h.classification === "As-hab al-Faraid"
+  );
+
+  faraidHeirs.forEach((heir) => {
+    let finalShare = heir.default_share;
+
+    const reductionRules = allRules.filter(
+      (r) =>
+        r.condition_type === "Reduction" && r.primary_heir_name === heir.name_en
+    );
+
+    reductionRules.forEach((rule) => {
+      // Check if the condition heir for reduction is present
+      const isConditionPresent = survivingHeirs.some(
+        (h) => h.name_en === rule.condition_heir_name && h.count > 0
+      );
+
+      // If condition is met, apply the reduction factor
+      if (isConditionPresent && rule.reduction_factor !== null) {
+        finalShare = rule.reduction_factor;
+        heir.status = `FARAD: Reduced to ${rule.reduction_factor} by ${rule.condition_heir_name}`;
+      }
+    });
+
+    if (finalShare > 0) {
+      heir.finalShare = finalShare * heir.count;
+      totalFaraidShare += heir.finalShare;
+      heir.status = heir.status.startsWith("FARAD")
+        ? heir.status
+        : `FARAD: Allocated ${finalShare}`;
+    }
+  });
+
+  // 5. Apply Residue (Asaba) Rules
+  // NOTE: You must also ensure your FiqhRules table has the correct reduction rules for Daughters (1/2 for one, 2/3 for two/more)
+  // Since the original code handles reduction rules, the logic below might be the culprit.
+
+  // 6. Apply Residue (Asaba) Rules
+  let residueFraction = 1.0 - totalFaraidShare;
+  let asabaHeirs = survivingHeirs.filter((h) => h.classification === "Asaba");
+
+  // ... (The Asaba calculation logic here looks fine for distributing the remainder)
+
+  if (residueFraction > 0 && asabaHeirs.length > 0) {
+    let totalAsabaPoints = 0;
+
+    asabaHeirs.forEach((heir) => {
+      // Assign points for 2:1 male:female ratio
+      if (
+        heir.name_en &&
+        (heir.name_en.includes("Son") ||
+          heir.name_en.includes("Brother") ||
+          heir.name_en === "Father")
+      ) {
+        heir.points = heir.count * 2;
+      } else if (
+        heir.name_en &&
+        (heir.name_en.includes("Daughter") || heir.name_en.includes("Sister"))
+      ) {
+        heir.points = heir.count * 1;
+      } else {
+        heir.points = 0;
+      }
+      totalAsabaPoints += heir.points;
+    });
+
+    if (totalAsabaPoints > 0) {
+      asabaHeirs.forEach((heir) => {
+        if (heir.points > 0) {
+          const asabaShare = residueFraction * (heir.points / totalAsabaPoints);
+          heir.finalShare += asabaShare;
+          heir.status = heir.status.includes("ASABA")
+            ? heir.status + ` (Allocated Residue of ${asabaShare.toFixed(4)})`
+            : `ASABA: Allocated Residue of ${asabaShare.toFixed(4)}`;
+          heir.classification = "Asaba (Residue)";
+        }
+      });
+    }
+  }
+
+  // 6. Reconciliation (Awl and Radd)
+  // 7. Reconciliation (Awl and Radd)
+  let totalFinalShare = survivingHeirs.reduce(
+    (sum, h) => sum + h.finalShare,
+    0
+  );
+
+  const hasAsaba = survivingHeirs.some(
+    (h) => h.classification && h.classification.includes("Asaba")
+  );
+  let reconciliationStatus = "Balanced";
+
+  // Awl (Increase): Total Faraid share exceeds 1.0
+  if (totalFinalShare > 1.0001) {
+    reconciliationStatus = "Awl (Increase)";
+    const awlFactor = totalFinalShare;
+
+    survivingHeirs.forEach((heir) => {
+      if (heir.finalShare > 0) {
+        heir.finalShare = heir.finalShare / awlFactor;
+      }
+    });
+    totalFinalShare = 1.0;
+  }
+
+  // Radd (Return): Residue remains and there is no Asaba heir
+  if (totalFinalShare < 0.9999 && !hasAsaba) {
+    reconciliationStatus = "Radd (Return)";
+
+    const residueForRadd = 1.0 - totalFinalShare;
+
+    const raddHeirs = survivingHeirs.filter(
+      (h) =>
+        h.classification === "As-hab al-Faraid" &&
+        h.name_en &&
+        !h.name_en.includes("Wife"), // Exclude Spouse from Radd
+      !h.name_en.includes("Wife") && // Exclude Spouse from Radd
+        !h.name_en.includes("Husband") // Exclude Spouse from Radd
+    );
+
+    const sumOfEligibleShares = raddHeirs.reduce(
+      (sum, h) => sum + h.finalShare,
+      0
+    );
+
+    if (sumOfEligibleShares > 0) {
+      raddHeirs.forEach((heir) => {
+        const proportion = heir.finalShare / sumOfEligibleShares;
+        const raddAmount = residueForRadd * proportion;
+
+        heir.finalShare += raddAmount;
+      });
+    }
+    totalFinalShare = 1.0;
+  }
+
+  // 7. Final Output
+  // 8. Final Output
+  return {
+    netEstate: netEstate,
+    totalFractionAllocated: totalFinalShare,
+    reconciliation: reconciliationStatus,
+    shares: survivingHeirs.map((h) => ({
+      heir: h.name_en,
+      count: h.count,
+      classification: h.classification,
+      share_fraction_of_total: h.finalShare,
+      share_amount: h.finalShare * netEstate,
+      status: h.status,
+    })),
+    notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}`,
+  };
 };
