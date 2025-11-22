@@ -159,7 +159,7 @@ exports.calculateShares = async (input) => {
     detailsResult = await pool.query(heirDetailsQuery, [heirNames]);
     const detailsMap = new Map(detailsResult.rows.map((d) => [d.name_en, d]));
 
-    // **CRITICAL CHECK**: Ensure every heir sent has a corresponding DB entry.
+    // **CRITICAL CHECK 1**: Ensure every heir sent has a corresponding DB entry.
     if (detailsResult.rows.length !== heirNames.length) {
       const foundNames = detailsResult.rows.map((r) => r.name_en);
       const missingNames = heirNames.filter(
@@ -169,7 +169,7 @@ exports.calculateShares = async (input) => {
         throw new Error(
           `Database error: Could not find entries for standardized heir types: ${missingNames.join(
             ", "
-          )}. Please check your database table ('HeirTypes') for correct spelling/casing.`
+          )}. Please check your database table ('HeirTypes') for correct spelling/casing (e.g., 'Husband', 'Wife').`
         );
       }
     }
@@ -179,12 +179,20 @@ exports.calculateShares = async (input) => {
       // Use the standardized name (Title Case) to look up details
       const standardizedName =
         h.name.charAt(0).toUpperCase() + h.name.slice(1).toLowerCase();
+      const details = detailsMap.get(standardizedName); // Try to get the details
+
+      // **CRITICAL CHECK 2 (Failsafe)**: Throw a precise error if details are missing.
+      if (!details) {
+        throw new Error(
+          `Critical Data Error: No database entry found for heir type: ${standardizedName}. This means the database table 'HeirTypes' is missing the entry for this heir (e.g., 'Wife' or 'Husband').`
+        );
+      }
+
       return {
         ...h,
-        ...detailsMap.get(standardizedName),
+        ...details,
         isExcluded: false,
         finalShareFraction: { num: 0, den: 1 },
-        status: "PENDING",
         // Crucial: The `name_en` used in subsequent logic must be the standardized one
         name_en: standardizedName,
       };
@@ -297,12 +305,16 @@ exports.calculateShares = async (input) => {
     // 2. Spouse Share Reduction (Presence of Descendants)
     if (updatedHeir.name_en === "Husband") {
       newDecimalShare = descendantIsPresent ? 0.25 : 0.5;
-      updatedHeir.status = `FARAD: Allocated ${newDecimalShare} (Descendants: ${
+      updatedHeir.status = `FARAD: Allocated ${
+        toFraction(newDecimalShare).num
+      }/${toFraction(newDecimalShare).den} (Descendants: ${
         descendantIsPresent ? "Yes" : "No"
       })`;
     } else if (updatedHeir.name_en === "Wife") {
       newDecimalShare = descendantIsPresent ? 0.125 : 0.25;
-      updatedHeir.status = `FARAD: Allocated ${newDecimalShare} (Descendants: ${
+      updatedHeir.status = `FARAD: Allocated ${
+        toFraction(newDecimalShare).num
+      }/${toFraction(newDecimalShare).den} (Descendants: ${
         descendantIsPresent ? "Yes" : "No"
       })`;
     }
