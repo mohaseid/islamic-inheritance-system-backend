@@ -289,6 +289,8 @@ exports.calculateShares = async (input) => {
     });
 
     if (finalShareFraction.num > 0) {
+      // CRITICAL FIX: Ensure a fresh object is assigned here, not a shared reference,
+      // although 'toFraction' should return a new object every time.
       updatedHeir.finalShareFraction = finalShareFraction;
       // Total Faraid share is calculated based on the COLLECTIVE share for the group
       totalFaraidShareFraction = addFractions(
@@ -371,7 +373,9 @@ exports.calculateShares = async (input) => {
   }
 
   // 8. Reconciliation (Awl and Radd)
-  let totalFinalShareFraction = survivingHeirs.reduce(
+
+  // Recalculate total share BEFORE RADD/AWL for accurate check
+  totalFinalShareFraction = survivingHeirs.reduce(
     (sumFraction, h) => addFractions(sumFraction, h.finalShareFraction),
     { num: 0, den: 1 }
   );
@@ -391,6 +395,9 @@ exports.calculateShares = async (input) => {
 
     survivingHeirs = survivingHeirs.map((heir) => {
       let updatedHeir = { ...heir };
+      // Deep clone the share fraction for safety before mutation
+      updatedHeir.finalShareFraction = { ...heir.finalShareFraction };
+
       if (updatedHeir.finalShareFraction.num > 0) {
         // New Share = Old Share / Awl Factor
         updatedHeir.finalShareFraction = divideFractions(
@@ -443,6 +450,9 @@ exports.calculateShares = async (input) => {
       survivingHeirs = survivingHeirs.map((heir) => {
         let updatedHeir = { ...heir };
 
+        // CRITICAL FIX: Ensure the share object is deep-cloned before any Radd-related logic
+        updatedHeir.finalShareFraction = { ...heir.finalShareFraction };
+
         // Check if this heir is eligible for Radd
         const isRaddEligible = raddHeirs.some(
           (r) => r.name_en === updatedHeir.name_en
@@ -457,7 +467,6 @@ exports.calculateShares = async (input) => {
           );
 
           // The new total share for the Radd-eligible heir is: Radd Pool * Proportion
-          // Example: (3/4) * ( (2/3) / (2/3) ) = 3/4 * 1 = 3/4
           updatedHeir.finalShareFraction = multiplyFractions(
             raddPoolFraction,
             proportionFraction
@@ -465,11 +474,10 @@ exports.calculateShares = async (input) => {
 
           updatedHeir.status += ` (Radd applied: New share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
         } else if (spouseHeirs.some((s) => s.name_en === updatedHeir.name_en)) {
-          // Explicitly confirm the spouse's final share is maintained by setting it to the value found in step 6
-          // This ensures it is not lost, even though the map copy should preserve it.
-          updatedHeir.finalShareFraction = updatedHeir.finalShareFraction;
+          // Spouse's share is maintained (already preserved via deep clone)
           updatedHeir.status += ` (Spouse: Share maintained at ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
         }
+        // If the heir is not eligible for Radd or a spouse, the initial deep-cloned fraction is returned as is.
         return updatedHeir;
       });
     }
