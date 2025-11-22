@@ -87,29 +87,54 @@ exports.calculateShares = async (input) => {
     (h) => h.name_en === "Son" || h.name_en === "Daughter"
   );
 
-  // === DYNAMIC SHARE ADJUSTMENTS BASED ON PRESENCE ===
+  // Check if a Son is present (to switch Daughter to Asaba)
+  const sonIsPresent = survivingHeirs.some((h) => h.name_en === "Son");
+
+  // === DYNAMIC SHARE ADJUSTMENTS BASED ON PRESENCE AND COUNT ===
 
   // 2. 🌟 CRITICAL FIX: Spouse Share Reduction (Presence of Descendants)
   survivingHeirs = survivingHeirs.map((heir) => {
     if (heir.name_en === "Husband" && descendantIsPresent) {
+      // Husband share reduces from 1/2 (0.5) to 1/4 (0.25)
       return {
         ...heir,
-        default_share: 0.25, // Change from 1/2 (0.5) to 1/4 (0.25) is handled by DB rules
+        default_share: 0.25,
         status: "FARAD: Reduced by Descendants",
       };
     } else if (heir.name_en === "Wife" && descendantIsPresent) {
+      // Wife share reduces from 1/4 (0.25) to 1/8 (0.125)
       return {
         ...heir,
-        default_share: 0.125, // Change from 1/4 (0.25) to 1/8 (0.125)
+        default_share: 0.125,
         status: "FARAD: Reduced by Descendants",
       };
     }
     return heir;
   });
 
-  // 3. CRITICAL FIX: Asaba bi-ghayrihi (Daughter with Son) Rule
-  const sonIsPresent = survivingHeirs.some((h) => h.name_en === "Son");
+  // 3. 🎯 NEW FIX: Daughter Fixed Share based on Count (ONLY if no Son is present)
+  survivingHeirs = survivingHeirs.map((heir) => {
+    if (heir.name_en === "Daughter" && !sonIsPresent) {
+      if (heir.count > 1) {
+        // Two or more daughters get 2/3 collectively (~0.6667)
+        return {
+          ...heir,
+          default_share: 2 / 3, // Set collective share to 2/3
+          status: "FARAD: Allocated 2/3 (Multiple Daughters)",
+        };
+      } else if (heir.count === 1) {
+        // One daughter gets 1/2 (0.5)
+        return {
+          ...heir,
+          default_share: 0.5, // Set share to 1/2
+          status: "FARAD: Allocated 1/2 (Single Daughter)",
+        };
+      }
+    }
+    return heir;
+  });
 
+  // 4. CRITICAL FIX: Asaba bi-ghayrihi (Daughter with Son) Rule
   if (sonIsPresent) {
     survivingHeirs = survivingHeirs.map((heir) => {
       if (heir.name_en === "Daughter") {
@@ -125,7 +150,7 @@ exports.calculateShares = async (input) => {
     });
   }
 
-  // 4. CRITICAL FIX: Father as pure Asaba Rule
+  // 5. CRITICAL FIX: Father as pure Asaba Rule
   // Father's share is 1/6 (fixed) when descendants exist.
   // Father's share is Asaba (residue) when NO descendants exist.
   if (
@@ -146,11 +171,13 @@ exports.calculateShares = async (input) => {
     });
   }
 
-  // 5. Apply Fixed Share (As-hab al-Faraid) Rules
+  // 6. Apply Fixed Share (As-hab al-Faraid) Rules
   let totalFaraidShare = 0;
 
+  // Filter heirs that are explicitly classified as As-hab al-Faraid
+  // This now uses the dynamically set default_share
   const faraidHeirs = survivingHeirs.filter(
-    (h) => h.classification === "As-hab al-Faraid"
+    (h) => h.classification === "As-hab al-Faraid" && h.default_share !== null
   );
 
   faraidHeirs.forEach((heir) => {
@@ -175,7 +202,14 @@ exports.calculateShares = async (input) => {
     });
 
     if (finalShare > 0) {
-      heir.finalShare = finalShare * heir.count;
+      // For fixed shares, the share is applied *per group*, not per person,
+      // which is why we don't multiply by heir.count here.
+      // E.g., 3 Daughters get 2/3 total, not 3 x (2/3).
+      // We only multiply by count if the finalShare represents a single person's share,
+      // but for Fara'id shares, we rely on the logic in Step 2/3/5 to set the correct collective fraction.
+
+      // We assume the default_share represents the collective share for that group (e.g., 2/3 for all daughters).
+      heir.finalShare = finalShare;
       totalFaraidShare += heir.finalShare;
       heir.status = heir.status.startsWith("FARAD")
         ? heir.status
@@ -183,14 +217,9 @@ exports.calculateShares = async (input) => {
     }
   });
 
-  // NOTE: You must also ensure your FiqhRules table has the correct reduction rules for Daughters (1/2 for one, 2/3 for two/more)
-  // Since the original code handles reduction rules, the logic below might be the culprit.
-
-  // 6. Apply Residue (Asaba) Rules
+  // 7. Apply Residue (Asaba) Rules
   let residueFraction = 1.0 - totalFaraidShare;
   let asabaHeirs = survivingHeirs.filter((h) => h.classification === "Asaba");
-
-  // ... (The Asaba calculation logic here looks fine for distributing the remainder)
 
   if (residueFraction > 0 && asabaHeirs.length > 0) {
     let totalAsabaPoints = 0;
@@ -229,7 +258,7 @@ exports.calculateShares = async (input) => {
     }
   }
 
-  // 7. Reconciliation (Awl and Radd)
+  // 8. Reconciliation (Awl and Radd)
   let totalFinalShare = survivingHeirs.reduce(
     (sum, h) => sum + h.finalShare,
     0
@@ -283,7 +312,7 @@ exports.calculateShares = async (input) => {
     totalFinalShare = 1.0;
   }
 
-  // 8. Final Output
+  // 9. Final Output
   return {
     netEstate: netEstate,
     totalFractionAllocated: totalFinalShare,
