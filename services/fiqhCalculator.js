@@ -257,9 +257,6 @@ exports.calculateShares = async (input) => {
     return updatedHeir;
   });
 
-  // CRITICAL: Initialize spouse fixed share to ensure it's not lost during Radd
-  let spouseFixedShareFraction = { num: 0, den: 1 };
-
   // 6. Apply Fixed Share (As-hab al-Faraid) Rules using Fractions
   let totalFaraidShareFraction = { num: 0, den: 1 };
 
@@ -296,11 +293,6 @@ exports.calculateShares = async (input) => {
       // Set the exact fraction for all Faraid heirs.
       updatedHeir.finalShareFraction = finalShareFraction;
 
-      // Store spouse share separately for Radd logic, preventing mutation
-      if (updatedHeir.name_en === "Husband" || updatedHeir.name_en === "Wife") {
-        spouseFixedShareFraction = finalShareFraction;
-      }
-
       // Calculate total Faraid share based on the collective share for the group
       totalFaraidShareFraction = addFractions(
         totalFaraidShareFraction,
@@ -315,6 +307,15 @@ exports.calculateShares = async (input) => {
     }
     return updatedHeir;
   });
+
+  // NEW: Calculate the total fixed share for all spouses after Step 6 processing
+  const spouseHeirsFinal = survivingHeirs.filter(
+    (h) => h.name_en === "Husband" || h.name_en === "Wife"
+  );
+  let spouseFixedShareFraction = spouseHeirsFinal.reduce(
+    (sum, h) => addFractions(sum, h.finalShareFraction),
+    { num: 0, den: 1 }
+  );
 
   // 7. Apply Residue (Asaba) Rules - SKIPPED FOR RADD CASE
 
@@ -362,7 +363,7 @@ exports.calculateShares = async (input) => {
     reconciliationStatus = "Radd (Return)";
 
     // Use the guaranteed fixed share of the spouse(s)
-    const spouseShareSumFraction = spouseFixedShareFraction; // Should be {num: 1, den: 4}
+    const spouseShareSumFraction = spouseFixedShareFraction;
 
     // The fraction available for redistribution is 1 - Spouse Share Sum (e.g., 1 - 1/4 = 3/4)
     const raddPoolFraction = subtractFractions(
@@ -416,7 +417,7 @@ exports.calculateShares = async (input) => {
 
           updatedHeir.status += ` (Radd applied: New share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
         } else {
-          // Non-participating heirs (like Father in this case, set to Asaba, but no residue)
+          // Non-participating heirs (like Asaba with no residue)
           updatedHeir.finalShareFraction = { num: 0, den: 1 };
           if (!updatedHeir.isExcluded) {
             updatedHeir.status = updatedHeir.status.includes("ASABA")
