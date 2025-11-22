@@ -17,7 +17,7 @@ app.use(express.json());
 
 const swaggerSpec = YAML.load("./openapi.yaml");
 
-swaggerSpec.servers[0].url = `http://localhost:${PORT}/api/v1`;
+swaggerSpec.servers[0].url = `http://localhost:${PORT}/api/`;
 
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 console.log(
