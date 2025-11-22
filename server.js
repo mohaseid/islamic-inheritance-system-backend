@@ -24,7 +24,7 @@ console.log(
   `Swagger documentation available at http://localhost:${PORT}/api-docs`
 );
 
-app.post("/api/v1/calculate-shares", calculateController.calculateShares);
+app.post("/api/calculate-shares", calculateController.calculateShares);
 
 app.get("/", (req, res) => {
   res.send(
