@@ -1,6 +1,6 @@
 const pool = require("../db");
 
-// --- UTILITY FUNCTIONS FOR EXACT FRACTION ARITHMETIC (No changes here) ---
+// --- UTILITY FUNCTIONS FOR EXACT FRACTION ARITHMETIC (Corrected 1/8) ---
 
 /**
  * Calculates the Greatest Common Divisor (GCD) of two numbers.
@@ -25,7 +25,7 @@ function toFraction(decimalShare) {
   // Check common Fara'id shares
   if (Math.abs(decimalShare - 0.5) < 1e-9) return { num: 1, den: 2 }; // 1/2
   if (Math.abs(decimalShare - 0.25) < 1e-9) return { num: 1, den: 4 }; // 1/4
-  if (Math.abs(decimalShare - 0.125) < 1e-9) return { num: 1, den: 12 }; // 1/8
+  // FIXED: Corrected 1/8 fraction mapping
   if (Math.abs(decimalShare - 0.125) < 1e-9) return { num: 1, den: 8 }; // 1/8
   if (Math.abs(decimalShare - 2 / 3) < 1e-9) return { num: 2, den: 3 }; // 2/3
   if (Math.abs(decimalShare - 1 / 6) < 1e-9) return { num: 1, den: 6 }; // 1/6
@@ -266,7 +266,7 @@ exports.calculateShares = async (input) => {
     const isSpouse =
       updatedHeir.name_en === "Husband" || updatedHeir.name_en === "Wife";
 
-    // CRITICAL FIX: Ensure fixed share is allocated if it's Faraid OR a Spouse, AND a share exists
+    // Ensure fixed share is allocated if it's Faraid OR a Spouse, AND a share exists
     if (
       (updatedHeir.classification === "As-hab al-Faraid" || isSpouse) &&
       updatedHeir.default_share !== null
@@ -396,7 +396,7 @@ exports.calculateShares = async (input) => {
   // 8. Reconciliation (Awl and Radd)
 
   // Recalculate total share BEFORE RADD/AWL for accurate check
-  let totalFinalShareFraction = survivingHeirs.reduce(
+  totalFinalShareFraction = survivingHeirs.reduce(
     (sumFraction, h) => addFractions(sumFraction, h.finalShareFraction),
     { num: 0, den: 1 }
   );
@@ -434,97 +434,90 @@ exports.calculateShares = async (input) => {
   if (totalFinalShareDecimal < 0.9999 && !hasAsaba) {
     reconciliationStatus = "Radd (Return)";
 
-    // 1. The fraction available for redistribution is 1 - Spouse Share Sum (1 - 1/4 = 3/4)
-    const raddPoolFraction = subtractFractions(
-      oneWhole,
-      spouseFixedShareFractionSum
-    );
+    // --- NEW ROBUST RADD LOGIC ---
 
-    // 2. Radd-eligible heirs (non-spouse Faraid heirs with a share)
-    const raddEligibleHeirs = survivingHeirs.filter(
-      (h) =>
-        h.classification === "As-hab al-Faraid" &&
-        h.finalShareFraction.num > 0 &&
-        !h.name_en.includes("Wife") &&
-        !h.name_en.includes("Husband")
-    );
-
-    // 3. Calculate the sum of shares *eligible for Radd* (e.g., Daughters' 2/3 share)
-    const sumOfEligibleSharesFraction = raddEligibleHeirs.reduce(
-      (sum, h) => addFractions(sum, h.finalShareFraction),
-      { num: 0, den: 1 }
-    );
-
-    if (sumOfEligibleSharesFraction.num > 0) {
-      survivingHeirs = survivingHeirs.map((heir) => {
-        let updatedHeir = { ...heir };
-
-        const isSpouse =
-          updatedHeir.name_en === "Husband" || updatedHeir.name_en === "Wife";
-
-        if (isSpouse) {
-          // Spouse is not eligible for Radd, so they keep their fixed share (already locked in Step 6).
-          const fixedShare = heir.finalShareFraction;
-
-          updatedHeir.finalShareFraction = { ...fixedShare };
-          updatedHeir.status = `FARAD: Fixed Share Maintained at ${fixedShare.num}/${fixedShare.den} (Not Radd Eligible)`;
-          return updatedHeir; // Exit the loop iteration for the spouse
-        }
-
-        // Find the heir in the eligible list to get their initial share
-        const eligibleHeirData = raddEligibleHeirs.find(
-          (r) => r.name_en === updatedHeir.name_en
-        );
-
-        if (eligibleHeirData) {
-          // RULE 2: Radd-eligible heirs share the remainder (Radd Pool) based on their original proportion.
-
-          // Proportion = (Heir Share / Sum of Eligible Shares)
-          const proportionFraction = divideFractions(
-            eligibleHeirData.finalShareFraction,
-            sumOfEligibleSharesFraction
-          );
-
-          // The new total share for the Radd-eligible heir is: Radd Pool * Proportion
-          updatedHeir.finalShareFraction = multiplyFractions(
-            raddPoolFraction,
-            proportionFraction
-          );
-
-          updatedHeir.status += ` (Radd applied: New total share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
-        } else {
-          // RULE 3: All other non-spouse, non-eligible heirs get zero.
-          updatedHeir.finalShareFraction = { num: 0, den: 1 };
-          if (!updatedHeir.isExcluded) {
-            updatedHeir.status = updatedHeir.status.includes("ASABA")
-              ? updatedHeir.status + " (Residue 0)"
-              : "NOT ALLOCATED";
-          }
-        }
-        return updatedHeir;
-      });
-    } else if (
-      spouseHeirs.length > 0 &&
-      sumOfEligibleSharesFraction.num === 0
+    // Special Case 1: Only one heir survives (Spouse or Non-Spouse Faraid)
+    if (
+      survivingHeirs.length === 1 &&
+      survivingHeirs[0].finalShareFraction.num > 0
     ) {
-      // Special case: Only spouse and no other eligible heirs.
-      // The remaining amount (Radd Pool) goes to the Bayt al-Mal (Public Treasury).
-      // Since we don't track Bayt al-Mal, we simply ensure the spouse's share is maintained
-      // and the total distribution is not 100%. For testing purposes, we assume the spouse
-      // keeps their fixed share (which is already set).
+      survivingHeirs[0].finalShareFraction = oneWhole;
+      survivingHeirs[0].status += " (Radd applied: Takes full estate, 1/1)";
+      totalFinalShareFraction = oneWhole;
+      totalFinalShareDecimal = 1.0;
     } else {
-      // Special case: Only one heir and they are Faraid (e.g., Single Daughter).
-      // The total share will be < 1.0 (e.g., 1/2). They take the whole remaining Radd Pool.
-      if (
-        survivingHeirs.length === 1 &&
-        survivingHeirs[0].finalShareFraction.num > 0
-      ) {
-        survivingHeirs[0].finalShareFraction = oneWhole;
-        survivingHeirs[0].status += " (Radd applied: Takes full estate)";
+      // Standard Radd: Multiple heirs, including spouse, and non-spouse Faraid heirs (Radd Eligible)
+
+      // 1. The fraction available for redistribution is 1 - Spouse Share Sum
+      const raddPoolFraction = subtractFractions(
+        oneWhole,
+        spouseFixedShareFractionSum
+      );
+
+      // 2. Radd-eligible heirs (non-spouse Faraid heirs with a share)
+      const raddEligibleHeirs = survivingHeirs.filter(
+        (h) =>
+          h.classification === "As-hab al-Faraid" &&
+          h.finalShareFraction.num > 0 &&
+          !h.name_en.includes("Wife") &&
+          !h.name_en.includes("Husband")
+      );
+
+      // 3. Calculate the sum of shares *eligible for Radd* (e.g., Daughters' 2/3 share)
+      const sumOfEligibleSharesFraction = raddEligibleHeirs.reduce(
+        (sum, h) => addFractions(sum, h.finalShareFraction),
+        { num: 0, den: 1 }
+      );
+
+      if (sumOfEligibleSharesFraction.num > 0) {
+        survivingHeirs = survivingHeirs.map((heir) => {
+          let updatedHeir = { ...heir };
+
+          const isSpouse =
+            updatedHeir.name_en === "Husband" || updatedHeir.name_en === "Wife";
+
+          if (isSpouse) {
+            // Spouse keeps their fixed share (locked in Step 6).
+            const fixedShare = heir.finalShareFraction;
+            updatedHeir.finalShareFraction = { ...fixedShare };
+            updatedHeir.status = `FARAD: Fixed Share Maintained at ${fixedShare.num}/${fixedShare.den} (Not Radd Eligible)`;
+          } else {
+            // Non-Spouse Radd-eligible heirs
+            const eligibleHeirData = raddEligibleHeirs.find(
+              (r) => r.name_en === updatedHeir.name_en
+            );
+
+            if (eligibleHeirData) {
+              // Proportion = (Heir Share / Sum of Eligible Shares)
+              const proportionFraction = divideFractions(
+                eligibleHeirData.finalShareFraction,
+                sumOfEligibleSharesFraction
+              );
+
+              // The new total share for the Radd-eligible heir is: Radd Pool * Proportion
+              updatedHeir.finalShareFraction = multiplyFractions(
+                raddPoolFraction,
+                proportionFraction
+              );
+
+              updatedHeir.status += ` (Radd applied: New total share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
+            } else {
+              // All other non-spouse, non-eligible heirs get zero.
+              updatedHeir.finalShareFraction = { num: 0, den: 1 };
+              if (!updatedHeir.isExcluded) {
+                updatedHeir.status = updatedHeir.status.includes("ASABA")
+                  ? updatedHeir.status + " (Residue 0)"
+                  : "NOT ALLOCATED";
+              }
+            }
+          }
+          return updatedHeir;
+        });
       }
+      totalFinalShareFraction = oneWhole;
+      totalFinalShareDecimal = 1.0;
     }
-    totalFinalShareFraction = oneWhole;
-    totalFinalShareDecimal = 1.0;
+    // --- END NEW ROBUST RADD LOGIC ---
   }
 
   // 9. Final Output
