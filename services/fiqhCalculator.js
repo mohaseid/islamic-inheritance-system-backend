@@ -150,6 +150,9 @@ exports.calculateShares = async (input) => {
   // --- DATABASE QUERIES (Robust Error Handling) ---
   let detailsResult, ruleResult;
   try {
+    // Log the standardized names being sent to the database
+    console.log("Standardized Heir Names sent to DB:", heirNames);
+
     // 1. Retrieve Heir Details (Classification and Default Share)
     const heirDetailsQuery = `
             SELECT heir_type_id, name_en, classification, default_share 
@@ -181,10 +184,10 @@ exports.calculateShares = async (input) => {
         h.name.charAt(0).toUpperCase() + h.name.slice(1).toLowerCase();
       const details = detailsMap.get(standardizedName); // Try to get the details
 
-      // **CRITICAL CHECK 2 (Failsafe)**: Throw a precise error if details are missing.
-      if (!details) {
+      // **CRITICAL CHECK 2 (Failsafe)**: Throw a precise error if details are missing or malformed.
+      if (!details || !details.classification) {
         throw new Error(
-          `Critical Data Error: No database entry found for heir type: ${standardizedName}. This means the database table 'HeirTypes' is missing the entry for this heir (e.g., 'Wife' or 'Husband').`
+          `Critical Data Error: Database entry for '${standardizedName}' is missing or incomplete. Specifically, the 'classification' field is missing. Please verify the entry in the 'HeirTypes' table.`
         );
       }
 
@@ -213,6 +216,7 @@ exports.calculateShares = async (input) => {
     ruleResult = await pool.query(ruleQuery, [heirNames]);
     allRules = ruleResult.rows;
   } catch (error) {
+    // Log the full stack for the server error
     console.error(
       "Database query failed during Fiqh calculation setup:",
       error.stack
