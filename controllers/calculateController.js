@@ -27,6 +27,7 @@ const fiqhCalculator = require("../services/fiqhCalculator");
  * type: string
  * enum: [male, female]
  * example: male
+ * description: The gender of the deceased.
  * assets:
  * type: number
  * description: Total value of the estate before liabilities and shares.
@@ -43,9 +44,11 @@ const fiqhCalculator = require("../services/fiqhCalculator");
  * name:
  * type: string
  * example: Spouse (Wife)
+ * description: The Fiqh classification name of the heir (e.g., Son, Daughter, Wife, Father).
  * count:
  * type: integer
  * example: 1
+ * description: The number of individuals of this heir type.
  * responses:
  * '200':
  * description: Successfully calculated shares.
@@ -71,21 +74,48 @@ const fiqhCalculator = require("../services/fiqhCalculator");
  * share_amount:
  * type: number
  * example: 15833.33
+ * share_fraction_of_total:
+ * type: number
+ * example: 0.166667
+ * status:
+ * type: string
+ * example: FARAD: Allocated 0.166667
  * '400':
  * description: Invalid input provided (e.g., missing heirs).
+ * content:
+ * application/json:
+ * schema:
+ * type: object
+ * properties:
+ * error:
+ * type: string
+ * example: No heirs provided for calculation.
  * '500':
  * description: Server error during calculation.
- * /api/calculate: // NOTE: If this path is duplicated from the swaggerDefinition in server.js, remove this line.
- * post:
- *
+ * content:
+ * application/json:
+ * schema:
+ * type: object
+ * properties:
+ * error:
+ * type: string
+ * example: An internal error occurred during the Fiqh calculation process.
  */
 exports.calculateShares = async (req, res) => {
   const input = req.body;
 
+  // Input validation: Ensure the heirs list is present and not empty.
   if (!input.heirs || input.heirs.length === 0) {
     return res
       .status(400)
       .json({ error: "No heirs provided for calculation." });
+  }
+
+  // Ensure assets and liabilities are defined, matching the Swagger schema's 'required' fields.
+  if (input.assets === undefined || input.liabilities === undefined) {
+    return res
+      .status(400)
+      .json({ error: "Assets and liabilities must be defined." });
   }
 
   try {
