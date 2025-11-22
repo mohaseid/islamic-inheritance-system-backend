@@ -20,7 +20,13 @@ function gcd(a, b) {
  * @returns {{num: number, den: number}} Exact fraction representation
  */
 function toFraction(decimalShare) {
-  if (decimalShare === null || isNaN(decimalShare)) return { num: 0, den: 1 };
+  // Check if the input is valid or 0/1
+  if (
+    decimalShare === null ||
+    isNaN(decimalShare) ||
+    typeof decimalShare !== "number"
+  )
+    return { num: 0, den: 1 };
 
   // Check common Fara'id shares
   if (Math.abs(decimalShare - 0.5) < 1e-9) return { num: 1, den: 2 }; // 1/2
@@ -54,7 +60,7 @@ function addFractions(f1, f2) {
   const newNum = f1.num * f2.den + f2.num * f1.den;
   const newDen = f1.den * f2.den;
   const commonDivisor = gcd(newNum, newDen);
-  return { num: newNum / commonDivisor, den: newDen / commonDivisor };
+  return { num: newNum / commonDivisor, den: newNum / commonDivisor };
 }
 
 /**
