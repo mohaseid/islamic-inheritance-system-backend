@@ -20,7 +20,7 @@ function gcd(a, b) {
  * @returns {{num: number, den: number}} Exact fraction representation
  */
 function toFraction(decimalShare) {
-  if (decimalShare === null) return { num: 0, den: 1 };
+  if (decimalShare === null || isNaN(decimalShare)) return { num: 0, den: 1 };
 
   // Check common Fara'id shares
   if (Math.abs(decimalShare - 0.5) < 1e-9) return { num: 1, den: 2 }; // 1/2
@@ -30,17 +30,11 @@ function toFraction(decimalShare) {
   if (Math.abs(decimalShare - 1 / 6) < 1e-9) return { num: 1, den: 6 }; // 1/6
   if (Math.abs(decimalShare - 1 / 3) < 1e-9) return { num: 1, den: 3 }; // 1/3
 
-  // For calculated shares (like Asaba or Radd), we assume the input is correct
-  // or we can convert back from a float to a fraction, but since we are
-  // only dealing with these fixed Fara'id shares initially, we stick to known fractions.
-
-  // If it's 0 or 1, return 0/1 or 1/1
-  if (Math.abs(decimalShare) < 1e-9) return { num: 0, den: 1 };
-  if (Math.abs(decimalShare - 1.0) < 1e-9) return { num: 1, den: 1 };
-
-  // Fallback: Use standard float conversion for non-Faraid shares (mainly for Asaba calculation residue)
-  // This is safer than relying on database floats for Faraid shares.
   const tolerance = 1e-6;
+  if (Math.abs(decimalShare) < tolerance) return { num: 0, den: 1 };
+  if (Math.abs(decimalShare - 1.0) < tolerance) return { num: 1, den: 1 };
+
+  // Fallback for calculated/non-standard fractions
   let num = Math.round(decimalShare / tolerance);
   let den = Math.round(1 / tolerance);
   const commonDivisor = gcd(num, den);
@@ -74,7 +68,7 @@ function subtractFractions(f1, f2) {
 
   const newNum = f1.num * f2.den - f2.num * f1.den;
   const newDen = f1.den * f2.den;
-  if (newNum < 0) return { num: 0, den: 1 }; // Result is zero or negative (shouldn't happen for residue)
+  if (newNum < 0) return { num: 0, den: 1 };
 
   const commonDivisor = gcd(newNum, newDen);
   return { num: newNum / commonDivisor, den: newDen / commonDivisor };
@@ -87,8 +81,7 @@ function subtractFractions(f1, f2) {
  * @returns {{num: number, den: number}} Quotient in simplified form
  */
 function divideFractions(f1, f2) {
-  if (f2.num === 0) return { num: 0, den: 1 };
-  if (f1.num === 0) return { num: 0, den: 1 };
+  if (f2.num === 0 || f1.num === 0) return { num: 0, den: 1 };
 
   const newNum = f1.num * f2.den;
   const newDen = f1.den * f2.num;
@@ -115,8 +108,10 @@ function multiplyFractions(f1, f2) {
  * @returns {number}
  */
 function toDecimal(f) {
-  if (f.den === 0) return 0;
-  return f.num / f.den;
+  if (f && f.den > 0) {
+    return f.num / f.den;
+  }
+  return 0;
 }
 
 // --- END UTILITY FUNCTIONS ---
@@ -302,7 +297,9 @@ exports.calculateShares = async (input) => {
       );
       updatedHeir.status = updatedHeir.status.startsWith("FARAD")
         ? updatedHeir.status
-        : `FARAD: Allocated ${toDecimal(finalShareFraction).toFixed(4)}`;
+        : `FARAD: Allocated ${toDecimal(finalShareFraction).toFixed(4)} (${
+            finalShareFraction.num
+          }/${finalShareFraction.den})`;
     }
     return updatedHeir;
   });
@@ -355,7 +352,7 @@ exports.calculateShares = async (input) => {
         const asabaShareDecimal =
           residueDecimal * (updatedHeir.points / totalAsabaPoints);
 
-        // Convert to a fraction (less critical since this is the only floating point arithmetic)
+        // Convert to a fraction
         const asabaShareFraction = toFraction(asabaShareDecimal);
 
         updatedHeir.finalShareFraction = addFractions(
@@ -403,7 +400,7 @@ exports.calculateShares = async (input) => {
       }
       return updatedHeir;
     });
-    totalFinalShareFraction = { num: 1, den: 1 };
+    totalFinalShareFraction = oneWhole;
     totalFinalShareDecimal = 1.0;
   }
 
@@ -415,12 +412,13 @@ exports.calculateShares = async (input) => {
     const spouseHeirs = survivingHeirs.filter(
       (h) => h.name_en === "Husband" || h.name_en === "Wife"
     );
+    // The fixed, unchangeable share of the spouse(s)
     const spouseShareSumFraction = spouseHeirs.reduce(
       (sum, h) => addFractions(sum, h.finalShareFraction),
       { num: 0, den: 1 }
     );
 
-    // The fraction available for redistribution is 1 - Spouse Share Sum
+    // The fraction available for redistribution is 1 - Spouse Share Sum (e.g., 1 - 1/4 = 3/4)
     const raddPoolFraction = subtractFractions(
       oneWhole,
       spouseShareSumFraction
@@ -435,7 +433,7 @@ exports.calculateShares = async (input) => {
         !h.name_en.includes("Husband")
     );
 
-    // Calculate the sum of shares *eligible for Radd* (Daughters' 2/3 share)
+    // Calculate the sum of shares *eligible for Radd* (e.g., Daughters' 2/3 share)
     const sumOfEligibleSharesFraction = raddHeirs.reduce(
       (sum, h) => addFractions(sum, h.finalShareFraction),
       { num: 0, den: 1 }
@@ -450,6 +448,7 @@ exports.calculateShares = async (input) => {
           (r) => r.name_en === updatedHeir.name_en
         );
 
+        // Spouses' shares are FIXED, Radd-eligible heirs' shares are RECALCULATED based on the Radd Pool.
         if (isRaddEligible) {
           // The proportion based on their initial share: Proportion = (Heir Share / Sum of Eligible Shares)
           const proportionFraction = divideFractions(
@@ -458,6 +457,7 @@ exports.calculateShares = async (input) => {
           );
 
           // The new total share for the Radd-eligible heir is: Radd Pool * Proportion
+          // Example: (3/4) * ( (2/3) / (2/3) ) = 3/4 * 1 = 3/4
           updatedHeir.finalShareFraction = multiplyFractions(
             raddPoolFraction,
             proportionFraction
@@ -465,9 +465,10 @@ exports.calculateShares = async (input) => {
 
           updatedHeir.status += ` (Radd applied: New share ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
         } else if (spouseHeirs.some((s) => s.name_en === updatedHeir.name_en)) {
-          // Spouse's share is maintained
-          updatedHeir.status +=
-            " (Spouse: Share maintained, excluded from Radd)";
+          // Explicitly confirm the spouse's final share is maintained by setting it to the value found in step 6
+          // This ensures it is not lost, even though the map copy should preserve it.
+          updatedHeir.finalShareFraction = updatedHeir.finalShareFraction;
+          updatedHeir.status += ` (Spouse: Share maintained at ${updatedHeir.finalShareFraction.num}/${updatedHeir.finalShareFraction.den})`;
         }
         return updatedHeir;
       });
