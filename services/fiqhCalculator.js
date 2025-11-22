@@ -390,7 +390,8 @@ exports.calculateShares = async (input) => {
 
         if (isSpouse) {
           // RULE 1: Spouse always gets their fixed share (1/4 in this case)
-          updatedHeir.finalShareFraction = spouseFixedShareFraction;
+          // Use a copy to avoid mutation issues in the mapping process
+          updatedHeir.finalShareFraction = { ...spouseFixedShareFraction };
           updatedHeir.status += ` (Radd: Fixed Share Maintained at ${spouseFixedShareFraction.num}/${spouseFixedShareFraction.den})`;
           return updatedHeir;
         }
