@@ -90,102 +90,67 @@ exports.calculateShares = async (input) => {
   // Check if a Son is present (to switch Daughter to Asaba)
   const sonIsPresent = survivingHeirs.some((h) => h.name_en === "Son");
 
-  // === DYNAMIC SHARE ADJUSTMENTS BASED ON PRESENCE AND COUNT ===
+  // === DYNAMIC SHARE ADJUSTMENTS BASED ON PRESENCE AND COUNT (Using map for immutability) ===
 
-  // 2. Spouse Share Reduction (Presence of Descendants)
   survivingHeirs = survivingHeirs.map((heir) => {
-    if (heir.name_en === "Husband") {
-      // Husband's share is 1/2 (0.5) without descendants, 1/4 (0.25) with descendants
+    let updatedHeir = { ...heir };
+
+    // 2. Spouse Share Reduction (Presence of Descendants)
+    if (updatedHeir.name_en === "Husband") {
       const newShare = descendantIsPresent ? 0.25 : 0.5;
-      return {
-        ...heir,
-        default_share: newShare,
-        status: `FARAD: Allocated ${newShare} (Descendants: ${
-          descendantIsPresent ? "Yes" : "No"
-        })`,
-      };
-    } else if (heir.name_en === "Wife") {
-      // Wife's share is 1/4 (0.25) without descendants, 1/8 (0.125) with descendants
+      updatedHeir.default_share = newShare;
+      updatedHeir.status = `FARAD: Allocated ${newShare} (Descendants: ${
+        descendantIsPresent ? "Yes" : "No"
+      })`;
+    } else if (updatedHeir.name_en === "Wife") {
       const newShare = descendantIsPresent ? 0.125 : 0.25;
-      return {
-        ...heir,
-        default_share: newShare,
-        status: `FARAD: Allocated ${newShare} (Descendants: ${
-          descendantIsPresent ? "Yes" : "No"
-        })`,
-      };
+      updatedHeir.default_share = newShare;
+      updatedHeir.status = `FARAD: Allocated ${newShare} (Descendants: ${
+        descendantIsPresent ? "Yes" : "No"
+      })`;
     }
-    return heir;
-  });
 
-  // 3. Daughter Fixed Share based on Count (ONLY if no Son is present)
-  survivingHeirs = survivingHeirs.map((heir) => {
-    if (heir.name_en === "Daughter" && !sonIsPresent) {
-      if (heir.count >= 2) {
-        // Two or more daughters get 2/3 collectively (~0.6667)
-        return {
-          ...heir,
-          default_share: 2 / 3, // Set collective share to 2/3
-          status: "FARAD: Allocated 2/3 (Multiple Daughters)",
-        };
-      } else if (heir.count === 1) {
-        // One daughter gets 1/2 (0.5)
-        return {
-          ...heir,
-          default_share: 0.5, // Set share to 1/2
-          status: "FARAD: Allocated 1/2 (Single Daughter)",
-        };
+    // 3. Daughter Fixed Share based on Count (ONLY if no Son is present)
+    if (updatedHeir.name_en === "Daughter" && !sonIsPresent) {
+      if (updatedHeir.count >= 2) {
+        updatedHeir.default_share = 2 / 3; // Set collective share to 2/3
+        updatedHeir.status = "FARAD: Allocated 2/3 (Multiple Daughters)";
+      } else if (updatedHeir.count === 1) {
+        updatedHeir.default_share = 0.5; // Set share to 1/2
+        updatedHeir.status = "FARAD: Allocated 1/2 (Single Daughter)";
       }
     }
-    return heir;
+
+    // 4. Asaba bi-ghayrihi (Daughter with Son) Rule
+    if (updatedHeir.name_en === "Daughter" && sonIsPresent) {
+      updatedHeir.classification = "Asaba";
+      updatedHeir.default_share = null;
+      updatedHeir.status = "ASABA (with Son)";
+    }
+
+    // 5. Father as pure Asaba Rule
+    if (updatedHeir.name_en === "Father" && !descendantIsPresent) {
+      updatedHeir.classification = "Asaba";
+      updatedHeir.default_share = null;
+      updatedHeir.status = "ASABA (No Descendants)";
+    }
+
+    return updatedHeir;
   });
-
-  // 4. CRITICAL FIX: Asaba bi-ghayrihi (Daughter with Son) Rule
-  if (sonIsPresent) {
-    survivingHeirs = survivingHeirs.map((heir) => {
-      if (heir.name_en === "Daughter") {
-        // Daughter becomes Asaba (residuary) with Son, losing her fixed share
-        return {
-          ...heir,
-          classification: "Asaba",
-          default_share: null, // Critical: Remove fixed share
-          status: "ASABA (with Son)",
-        };
-      }
-      return heir;
-    });
-  }
-
-  // 5. CRITICAL FIX: Father as pure Asaba Rule
-  // Father's share is 1/6 (fixed) when descendants exist.
-  // Father's share is Asaba (residue) when NO descendants exist.
-  if (
-    survivingHeirs.some((h) => h.name_en === "Father") &&
-    !descendantIsPresent
-  ) {
-    survivingHeirs = survivingHeirs.map((heir) => {
-      if (heir.name_en === "Father") {
-        // Father takes the residue if no descendants are present
-        return {
-          ...heir,
-          classification: "Asaba",
-          default_share: null, // Critical: Father enters Asaba calculation
-          status: "ASABA (No Descendants)",
-        };
-      }
-      return heir;
-    });
-  }
 
   // 6. Apply Fixed Share (As-hab al-Faraid) Rules
   let totalFaraidShare = 0;
 
-  const faraidHeirs = survivingHeirs.filter(
-    (h) => h.classification === "As-hab al-Faraid" && h.default_share !== null
-  );
+  survivingHeirs = survivingHeirs.map((heir) => {
+    if (
+      heir.classification !== "As-hab al-Faraid" ||
+      heir.default_share === null
+    ) {
+      return heir; // Skip non-Faraid heirs or those set to null share (like Asaba father)
+    }
 
-  faraidHeirs.forEach((heir) => {
-    let finalShare = heir.default_share;
+    let updatedHeir = { ...heir };
+    let finalShare = updatedHeir.default_share;
 
     // Apply Reduction Rules (from database, if any)
     const reductionRules = allRules.filter(
@@ -200,18 +165,19 @@ exports.calculateShares = async (input) => {
 
       if (isConditionPresent && rule.reduction_factor !== null) {
         finalShare = rule.reduction_factor;
-        heir.status = `FARAD: Reduced to ${rule.reduction_factor} by ${rule.condition_heir_name}`;
+        updatedHeir.status = `FARAD: Reduced to ${rule.reduction_factor} by ${rule.condition_heir_name}`;
       }
     });
 
     if (finalShare > 0) {
-      // The finalShare here represents the COLLECTIVE fraction for the group.
-      heir.finalShare = finalShare;
-      totalFaraidShare += heir.finalShare;
-      heir.status = heir.status.startsWith("FARAD")
-        ? heir.status
+      updatedHeir.finalShare = finalShare;
+      // Total Faraid share is calculated based on the COLLECTIVE share for the group
+      totalFaraidShare += updatedHeir.finalShare;
+      updatedHeir.status = updatedHeir.status.startsWith("FARAD")
+        ? updatedHeir.status
         : `FARAD: Allocated ${finalShare}`;
     }
+    return updatedHeir;
   });
 
   // 7. Apply Residue (Asaba) Rules
@@ -221,7 +187,12 @@ exports.calculateShares = async (input) => {
   if (residueFraction > 0 && asabaHeirs.length > 0) {
     let totalAsabaPoints = 0;
 
-    asabaHeirs.forEach((heir) => {
+    survivingHeirs = survivingHeirs.map((heir) => {
+      if (heir.classification !== "Asaba") return heir;
+
+      let updatedHeir = { ...heir };
+      let points = 0;
+
       // Assign points for 2:1 male:female ratio
       if (
         heir.name_en &&
@@ -229,28 +200,35 @@ exports.calculateShares = async (input) => {
           heir.name_en.includes("Brother") ||
           heir.name_en === "Father")
       ) {
-        heir.points = heir.count * 2;
+        points = heir.count * 2;
       } else if (
         heir.name_en &&
         (heir.name_en.includes("Daughter") || heir.name_en.includes("Sister"))
       ) {
-        heir.points = heir.count * 1;
+        points = heir.count * 1;
       } else {
-        heir.points = 0;
+        points = 0;
       }
-      totalAsabaPoints += heir.points;
+
+      updatedHeir.points = points;
+      totalAsabaPoints += points;
+      return updatedHeir;
     });
 
     if (totalAsabaPoints > 0) {
-      asabaHeirs.forEach((heir) => {
-        if (heir.points > 0) {
-          const asabaShare = residueFraction * (heir.points / totalAsabaPoints);
-          heir.finalShare += asabaShare;
-          heir.status = heir.status.includes("ASABA")
-            ? heir.status + ` (Allocated Residue of ${asabaShare.toFixed(4)})`
-            : `ASABA: Allocated Residue of ${asabaShare.toFixed(4)}`;
-          heir.classification = "Asaba (Residue)";
-        }
+      survivingHeirs = survivingHeirs.map((heir) => {
+        if (heir.classification !== "Asaba" || heir.points === 0) return heir;
+
+        let updatedHeir = { ...heir };
+        const asabaShare =
+          residueFraction * (updatedHeir.points / totalAsabaPoints);
+        updatedHeir.finalShare += asabaShare;
+        updatedHeir.status = updatedHeir.status.includes("ASABA")
+          ? updatedHeir.status +
+            ` (Allocated Residue of ${asabaShare.toFixed(4)})`
+          : `ASABA: Allocated Residue of ${asabaShare.toFixed(4)}`;
+        updatedHeir.classification = "Asaba (Residue)";
+        return updatedHeir;
       });
     }
   }
@@ -271,10 +249,12 @@ exports.calculateShares = async (input) => {
     reconciliationStatus = "Awl (Increase)";
     const awlFactor = totalFinalShare;
 
-    survivingHeirs.forEach((heir) => {
-      if (heir.finalShare > 0) {
-        heir.finalShare = heir.finalShare / awlFactor;
+    survivingHeirs = survivingHeirs.map((heir) => {
+      let updatedHeir = { ...heir };
+      if (updatedHeir.finalShare > 0) {
+        updatedHeir.finalShare = updatedHeir.finalShare / awlFactor;
       }
+      return updatedHeir;
     });
     totalFinalShare = 1.0;
   }
@@ -285,21 +265,14 @@ exports.calculateShares = async (input) => {
 
     const residueForRadd = 1.0 - totalFinalShare;
 
-    // IMPORTANT: Exclude all spouses from Radd eligibility.
+    // Exclude all spouses from Radd eligibility.
     const raddHeirs = survivingHeirs.filter(
       (h) =>
         h.classification === "As-hab al-Faraid" &&
         h.finalShare > 0 &&
-        h.name_en &&
         !h.name_en.includes("Wife") &&
         !h.name_en.includes("Husband")
     );
-
-    // The spouse's share must be preserved exactly as it was calculated (1/4)
-    const spouseHeir = survivingHeirs.find(
-      (h) => h.name_en === "Husband" || h.name_en === "Wife"
-    );
-    const preservedSpouseShare = spouseHeir ? spouseHeir.finalShare : 0;
 
     // Calculate the sum of shares *eligible for Radd* (Daughters' 2/3 share)
     const sumOfEligibleShares = raddHeirs.reduce(
@@ -307,19 +280,23 @@ exports.calculateShares = async (input) => {
       0
     );
 
-    // The available residue for Radd is the total residue minus the spouse's share.
-    // Wait, the totalFinalShare already includes the spouse's share, so the residue
-    // is correctly 1.0 - totalFinalShare. The Radd only applies to the *non-spouse* Faraid heirs.
-
     if (sumOfEligibleShares > 0) {
-      // 🎯 The Fix: The Radd amount should only be distributed among the Radd-eligible heirs (Daughters).
-      raddHeirs.forEach((heir) => {
-        const proportion = heir.finalShare / sumOfEligibleShares;
-        const raddAmount = residueForRadd * proportion;
-        // Add the Radd amount to the daughter's existing share (2/3)
-        heir.finalShare += raddAmount;
+      survivingHeirs = survivingHeirs.map((heir) => {
+        let updatedHeir = { ...heir };
+
+        // Check if this heir is eligible for Radd
+        const isRaddEligible = raddHeirs.some(
+          (r) => r.name_en === updatedHeir.name_en
+        );
+
+        if (isRaddEligible) {
+          const proportion = updatedHeir.finalShare / sumOfEligibleShares;
+          const raddAmount = residueForRadd * proportion;
+          // Add the Radd amount to the heir's existing share
+          updatedHeir.finalShare += raddAmount;
+        }
+        return updatedHeir;
       });
-      // The Spouse's share (1/4) remains unchanged and is included in the final allocation.
     }
     totalFinalShare = 1.0;
   }
@@ -329,16 +306,31 @@ exports.calculateShares = async (input) => {
     netEstate: netEstate,
     totalFractionAllocated: totalFinalShare,
     reconciliation: reconciliationStatus,
-    shares: survivingHeirs.map((h) => ({
-      heir: h.name_en,
-      count: h.count,
-      classification: h.classification,
-      // Fix: Ensure that if a spouse exists and has a finalShare, it's not divided by count (which is always 1).
-      // We also need to split the Daughter's collective share among the count for the output display.
-      share_fraction_of_total: h.finalShare,
-      share_amount: h.finalShare * netEstate,
-      status: h.status,
-    })),
+    shares: survivingHeirs.map((h) => {
+      // For groups like 3 Daughters, their h.finalShare is the COLLECTIVE share (3/4).
+      // We need to divide this collective share by the count only if the group has multiple people.
+      let sharePerPerson = h.finalShare;
+
+      // We must only divide if the heir is NOT the spouse AND the count is > 1.
+      if (
+        h.count > 1 &&
+        !h.name_en.includes("Husband") &&
+        !h.name_en.includes("Wife")
+      ) {
+        // This splits the collective share (e.g., 3/4) among the 3 daughters
+        sharePerPerson = h.finalShare / h.count;
+      }
+
+      return {
+        heir: h.name_en,
+        count: h.count,
+        classification: h.classification,
+        // The share fraction displayed should be the total fraction of the net estate for the GROUP (Daughters or Husband)
+        share_fraction_of_total: h.finalShare,
+        share_amount: h.finalShare * netEstate,
+        status: h.status,
+      };
+    }),
     notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}`,
   };
 };
