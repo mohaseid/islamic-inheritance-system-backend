@@ -131,13 +131,24 @@ exports.calculateShares = async (input) => {
 
   let heirsWithDetails = [];
   let allRules = [];
-  const heirNames = heirs.map((h) => h.name);
+
+  // Standardize heir names to Title Case for database compatibility (e.g., "husband" -> "Husband")
+  const heirNames = heirs.map(
+    (h) => h.name.charAt(0).toUpperCase() + h.name.slice(1).toLowerCase()
+  );
 
   if (heirNames.length === 0) {
-    throw new Error("No heirs provided for calculation.");
+    return {
+      netEstate: netEstate,
+      totalFractionAllocated: 0,
+      reconciliation: "No Heirs",
+      shares: [],
+      notes: "Calculation failed: No heirs provided.",
+    };
   }
 
   // --- DATABASE QUERIES (Robust Error Handling) ---
+  let detailsResult, ruleResult;
   try {
     // 1. Retrieve Heir Details (Classification and Default Share)
     const heirDetailsQuery = `
@@ -145,18 +156,39 @@ exports.calculateShares = async (input) => {
             FROM HeirTypes 
             WHERE name_en = ANY($1::text[])
         `;
-    // Using explicit array type in the query for robustness
-    const detailsResult = await pool.query(heirDetailsQuery, [heirNames]);
+    detailsResult = await pool.query(heirDetailsQuery, [heirNames]);
     const detailsMap = new Map(detailsResult.rows.map((d) => [d.name_en, d]));
 
+    // **CRITICAL CHECK**: Ensure every heir sent has a corresponding DB entry.
+    if (detailsResult.rows.length !== heirNames.length) {
+      const foundNames = detailsResult.rows.map((r) => r.name_en);
+      const missingNames = heirNames.filter(
+        (name) => !foundNames.includes(name)
+      );
+      if (missingNames.length > 0) {
+        throw new Error(
+          `Database error: Could not find entries for standardized heir types: ${missingNames.join(
+            ", "
+          )}. Please check your database table ('HeirTypes') for correct spelling/casing.`
+        );
+      }
+    }
+
     // 2. Map frontend heirs with database details
-    heirsWithDetails = heirs.map((h) => ({
-      ...h,
-      ...detailsMap.get(h.name),
-      isExcluded: false,
-      finalShareFraction: { num: 0, den: 1 },
-      status: "PENDING",
-    }));
+    heirsWithDetails = heirs.map((h) => {
+      // Use the standardized name (Title Case) to look up details
+      const standardizedName =
+        h.name.charAt(0).toUpperCase() + h.name.slice(1).toLowerCase();
+      return {
+        ...h,
+        ...detailsMap.get(standardizedName),
+        isExcluded: false,
+        finalShareFraction: { num: 0, den: 1 },
+        status: "PENDING",
+        // Crucial: The `name_en` used in subsequent logic must be the standardized one
+        name_en: standardizedName,
+      };
+    });
 
     // 3. Retrieve Fiqh Rules (Exclusion and Reduction)
     const ruleQuery = `
@@ -170,7 +202,7 @@ exports.calculateShares = async (input) => {
             LEFT JOIN HeirTypes t2 ON r.condition_heir_id = t2.heir_type_id
             WHERE t1.name_en = ANY($1::text[]) OR t2.name_en = ANY($1::text[]);
         `;
-    const ruleResult = await pool.query(ruleQuery, [heirNames]);
+    ruleResult = await pool.query(ruleQuery, [heirNames]);
     allRules = ruleResult.rows;
   } catch (error) {
     console.error(
@@ -179,7 +211,7 @@ exports.calculateShares = async (input) => {
     );
     // Re-throw the error as a standard message for the frontend
     throw new Error(
-      "Failed to calculate shares. Check database connection/heir names."
+      `Failed to initialize calculation (Database Step 1-3 error): ${error.message}`
     );
   }
   // --- END DATABASE QUERIES ---
@@ -207,15 +239,56 @@ exports.calculateShares = async (input) => {
   let survivingHeirs = heirsWithDetails.filter((h) => !h.isExcluded);
   const survivingHeirCount = survivingHeirs.length;
 
-  // Determine if any descendant is present
+  // --- START DEFINITIVE SINGLE-HEIR CHECK AND EARLY EXIT ---
+  if (survivingHeirCount === 1) {
+    const onlyHeir = survivingHeirs[0];
+
+    // Any single, surviving heir takes the entire estate (Radd or Asaba).
+    onlyHeir.finalShareFraction = oneWhole;
+
+    // Determine classification for status note
+    const classificationType =
+      onlyHeir.classification && onlyHeir.classification.includes("Asaba")
+        ? "Asaba"
+        : "Faraid";
+    const statusType =
+      classificationType === "Asaba"
+        ? "Balanced (Asaba)"
+        : "Radd (Return - Single Heir)";
+
+    onlyHeir.status = `FINAL: Takes full estate (1/1) by ${statusType} rule.`;
+    reconciliationStatus = statusType;
+
+    // Allocation is finalized, return results now.
+    return {
+      netEstate: netEstate,
+      totalFractionAllocated: 1.0,
+      reconciliation: reconciliationStatus,
+      shares: survivingHeirs.map((h) => {
+        const finalShareDecimal = toDecimal(h.finalShareFraction);
+        return {
+          heir: h.name_en,
+          count: h.count,
+          classification: h.classification,
+          share_fraction_of_total: finalShareDecimal,
+          share_amount: finalShareDecimal * netEstate,
+          status: h.status,
+        };
+      }),
+      notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}. Total Final Fraction: 1/1`,
+    };
+  }
+  // --- END DEFINITIVE SINGLE-HEIR CHECK AND EARLY EXIT ---
+
+  // --- DYNAMIC SHARE ADJUSTMENTS (for Multi-Heir Scenarios) ---
+
+  // Determine if any descendant is present (Needed for Spouse/Father share reduction)
   const descendantIsPresent = survivingHeirs.some(
     (h) => h.name_en === "Son" || h.name_en === "Daughter"
   );
 
   // Check if a Son is present (to switch Daughter to Asaba)
   const sonIsPresent = survivingHeirs.some((h) => h.name_en === "Son");
-
-  // === DYNAMIC SHARE ADJUSTMENTS BASED ON PRESENCE AND COUNT (Steps 2, 3, 4, 5) ===
 
   survivingHeirs = survivingHeirs.map((heir) => {
     let updatedHeir = { ...heir };
@@ -302,7 +375,7 @@ exports.calculateShares = async (input) => {
         // Set the exact fraction for all Faraid heirs.
         updatedHeir.finalShareFraction = finalShareFraction;
 
-        // Calculate total Faraid share based on the collective share for the group
+        // Calculate total fixed share based on the *group's* total share
         totalFixedFaraidShareFraction = addFractions(
           totalFixedFaraidShareFraction,
           finalShareFraction
@@ -323,52 +396,6 @@ exports.calculateShares = async (input) => {
   });
 
   let totalFinalShareDecimal = toDecimal(totalFixedFaraidShareFraction);
-
-  // --- START HIGH-PRIORITY SINGLE HEIR CHECK AND EARLY EXIT (The definitive fix) ---
-  if (survivingHeirCount === 1) {
-    const onlyHeir = survivingHeirs[0];
-    const isSpouse =
-      onlyHeir.name_en === "Husband" || onlyHeir.name_en === "Wife";
-    const isFaraid = onlyHeir.classification === "As-hab al-Faraid" || isSpouse;
-
-    // Check for single Faraid heir with residue or single Asaba heir. They take 100%.
-    if (
-      (isFaraid &&
-        totalFinalShareDecimal < 0.9999 &&
-        totalFinalShareDecimal > 0) ||
-      onlyHeir.classification.includes("Asaba")
-    ) {
-      // Force 100% allocation (Radd or Asaba)
-      onlyHeir.finalShareFraction = oneWhole;
-      onlyHeir.status +=
-        " (Radd/Asaba applied: Only heir takes full estate, 1/1)";
-      reconciliationStatus = isFaraid
-        ? "Radd (Return - Single Heir)"
-        : "Balanced (Asaba)";
-      totalFixedFaraidShareFraction = oneWhole;
-      totalFinalShareDecimal = 1.0;
-    }
-
-    // Allocation is finalized, return results now.
-    return {
-      netEstate: netEstate,
-      totalFractionAllocated: totalFinalShareDecimal,
-      reconciliation: reconciliationStatus,
-      shares: survivingHeirs.map((h) => {
-        const finalShareDecimal = toDecimal(h.finalShareFraction);
-        return {
-          heir: h.name_en,
-          count: h.count,
-          classification: h.classification,
-          share_fraction_of_total: finalShareDecimal,
-          share_amount: finalShareDecimal * netEstate,
-          status: h.status,
-        };
-      }),
-      notes: `Calculation finished. Reconciliation status: ${reconciliationStatus}. Total Final Fraction: ${totalFixedFaraidShareFraction.num}/${totalFixedFaraidShareFraction.den}`,
-    };
-  }
-  // --- END HIGH-PRIORITY SINGLE HEIR CHECK AND EARLY EXIT ---
 
   // --- STANDARD MULTI-HEIR LOGIC CONTINUES FROM HERE ---
 
